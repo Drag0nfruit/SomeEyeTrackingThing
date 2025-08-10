@@ -30,7 +30,7 @@ export default async function exportRoutes(fastify: FastifyInstance) {
       // Generate CSV content with proper headers
       const csvHeader = 'timestamp,xRaw,xFiltered,confidence\n';
       const csvRows = samples.map((sample: any) => 
-        `${sample.ts.toString()},${sample.xRaw},${sample.xFiltered || ''},${sample.confidence || ''}`
+        `${sample.ts},${sample.xRaw},${sample.xFiltered || ''},${sample.confidence || ''}`
       ).join('\n');
       
       const csvContent = csvHeader + csvRows;
@@ -74,7 +74,7 @@ export default async function exportRoutes(fastify: FastifyInstance) {
           calibRight: session.calibRight
         },
         samples: samples.map((sample: any) => ({
-          ts: sample.ts.toString(), // Convert BigInt to string
+          ts: sample.ts.toString(),
           xRaw: sample.xRaw,
           xFiltered: sample.xFiltered,
           confidence: sample.confidence

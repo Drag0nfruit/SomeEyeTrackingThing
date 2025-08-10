@@ -1,7 +1,22 @@
-import React from 'react'
-import { Link } from 'react-router-dom'
+import React, { useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import EyeTracker from '../components/EyeTracker'
 
 const Home: React.FC = () => {
+  const [showRecorder, setShowRecorder] = useState(false);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const navigate = useNavigate();
+
+  const handleSessionCreated = (sessionId: string) => {
+    setCurrentSessionId(sessionId);
+  };
+
+  const handleViewSession = () => {
+    if (currentSessionId) {
+      navigate(`/sessions/${currentSessionId}`);
+    }
+  };
+
   return (
     <div className="home">
       <div className="hero-section">
@@ -16,9 +31,12 @@ const Home: React.FC = () => {
         <div className="action-card">
           <h3>Record New Session</h3>
           <p>Start a new eye tracking recording session using your webcam</p>
-          <Link to="/record">
-            <button className="primary-btn">Start Recording</button>
-          </Link>
+          <button 
+            onClick={() => setShowRecorder(!showRecorder)}
+            className="primary-btn"
+          >
+            {showRecorder ? 'Hide Recorder' : 'Start Recording'}
+          </button>
         </div>
 
         <div className="action-card">
@@ -28,7 +46,24 @@ const Home: React.FC = () => {
             <button className="secondary-btn">Browse Sessions</button>
           </Link>
         </div>
+
+        {currentSessionId && (
+          <div className="action-card">
+            <h3>View Current Session</h3>
+            <p>Analyze the session you just recorded</p>
+            <button onClick={handleViewSession} className="secondary-btn">
+              View Session
+            </button>
+          </div>
+        )}
       </div>
+
+      {showRecorder && (
+        <div className="recorder-section">
+          <h2>Eye Tracking Recorder</h2>
+          <EyeTracker onSessionCreated={handleSessionCreated} />
+        </div>
+      )}
     </div>
   )
 }

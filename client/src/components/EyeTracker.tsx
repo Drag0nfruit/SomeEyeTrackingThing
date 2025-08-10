@@ -1,60 +1,9 @@
-import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Camera } from '@mediapipe/camera_utils';
 import { FaceMesh } from '@mediapipe/face_mesh';
 import { drawConnectors } from '@mediapipe/drawing_utils';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import type { TooltipProps } from 'recharts';
-import type { ValueType, NameType } from 'recharts/types/component/DefaultTooltipContent';
 import axios from 'axios';
-
-// ---- MediaPipe FaceMesh indices (refineLandmarks: true) ----
-const LEFT_IRIS = [468, 469, 470, 471, 472];   // 472 ≈ center
-const RIGHT_IRIS = [473, 474, 475, 476, 477];  // 477 ≈ center
-const LEFT_EYE_INNER  = 263; // subject's left (nasal)
-const LEFT_EYE_OUTER  = 362; // subject's left (temporal)
-const RIGHT_EYE_INNER = 133; // subject's right (nasal)
-const RIGHT_EYE_OUTER = 33;  // subject's right (temporal)
-
-const SingleValueTooltip: React.FC<TooltipProps<ValueType, NameType>> = ({ active, label, payload }) => {
-  if (!active || !payload || payload.length === 0) return null;
-  // Prefer the main line; fall back to the first item if missing
-  const main = payload.find(p => p.name === 'main') ?? payload[0];
-
-  return (
-    <div style={{ background: 'rgba(0,0,0,0.75)', color: '#fff', padding: 8, borderRadius: 4 }}>
-      <div style={{ opacity: 0.8 }}>
-        {new Date(label as number).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-      </div>
-      <div><strong>Eye Position:</strong> {Number(main.value).toFixed(3)}</div>
-    </div>
-  );
-};
-
-function clamp(v: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, v));
-}
-
-// Classify iris position within an eye.
-// Returns t in [0..1] where 0 = inner(nasal), 1 = outer(temporal)
-function classifyIrisSide(
-  landmarks: any[],
-  irisCenterIdx: number,
-  innerIdx: number,
-  outerIdx: number
-) {
-  const center = landmarks[irisCenterIdx];
-  const inner  = landmarks[innerIdx];
-  const outer  = landmarks[outerIdx];
-  if (!center || !inner || !outer) {
-    return { ok: false as const, t: NaN, eyeSide: 'unknown', imageSide: 'unknown' };
-  }
-  const midX = (inner.x + outer.x) / 2;
-  const imageSide = center.x < midX ? 'image-left' : 'image-right';
-  const tRaw = (center.x - inner.x) / ((outer.x - inner.x) || 1e-6);
-  const t = clamp(tRaw, 0, 1);
-  const eyeSide = t < 0.5 ? 'toward-inner (nasal)' : 'toward-outer (temporal)';
-  return { ok: true as const, t, eyeSide, imageSide };
-}
 
 interface Point {
   ts: number;
@@ -86,110 +35,23 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
   const [uploadQueue, setUploadQueue] = useState<Point[]>([]);
   const [isCalibrating, setIsCalibrating] = useState(false);
   const [calibrationStep, setCalibrationStep] = useState<'left' | 'center' | 'right' | null>(null);
-  const [calibrationData, setCalibrationData] = useState<{
-    left: { x: number; y: number } | null;
-    center: { x: number; y: number } | null;
-    right: { x: number; y: number } | null;
-  }>({
-    left: null,
-    center: null,
-    right: null
-  });
-  const [calibrationSamples, setCalibrationSamples] = useState<{
-    left: { x: number; y: number }[];
-    center: { x: number; y: number }[];
-    right: { x: number; y: number }[];
-  }>({
-    left: [],
-    center: [],
-    right: []
-  });
-  const [calibrationCountdown, setCalibrationCountdown] = useState<number>(0);
   const [trackingStatus, setTrackingStatus] = useState<string>('Initializing...');
   const [lastRealDataTime, setLastRealDataTime] = useState<number>(0);
   const [debugMode, setDebugMode] = useState<boolean>(false);
   const [showLandmarks, setShowLandmarks] = useState<boolean>(true);
-  const [isInitializing, setIsInitializing] = useState<boolean>(true);
-  const [sessionStats, setSessionStats] = useState<{
-    totalPoints: number;
-    duration: number;
-    uploadRate: number;
-    lastUpload: number;
-  } | null>(null);
-  const [uploadStats, setUploadStats] = useState<{
-    totalUploaded: number;
-    totalFailed: number;
-    averageBatchSize: number;
-  }>({
-    totalUploaded: 0,
-    totalFailed: 0,
-    averageBatchSize: 0
-  });
-  const showLandmarksRef = useRef(showLandmarks);
-  const isRecordingRef = useRef(isRecording);
-  const isPausedRef = useRef(isPaused);
   const [debugInfo, setDebugInfo] = useState<{
     leftEye: { x: number; y: number } | null;
     rightEye: { x: number; y: number } | null;
     averageEye: { x: number; y: number } | null;
     faceDetected: boolean;
     landmarksCount: number;
-    leftEyeSide?: string;
-    rightEyeSide?: string;
-    leftT?: number;
-    rightT?: number;
   }>({
     leftEye: null,
     rightEye: null,
     averageEye: null,
     faceDetected: false,
-    landmarksCount: 0,
-    leftEyeSide: 'unknown',
-    rightEyeSide: 'unknown',
-    leftT: NaN,
-    rightT: NaN
+    landmarksCount: 0
   });
-
-  const WINDOW_MS = 15_000;
-
-  // If your ts ever comes in seconds, coerce to ms
-  const toMs = (ts: number) => (ts < 1e12 ? ts * 1000 : ts);
-
-  const latestTs = useMemo(() => {
-    if (!liveData.length) return Date.now();
-    return toMs(liveData[liveData.length - 1].ts);
-  }, [liveData]);
-
-  const windowedData = useMemo(() => {
-    const end = latestTs;
-    const start = end - WINDOW_MS;
-    // normalize ts to ms and filter to the moving window
-    return liveData
-      .map(p => ({ ...p, ts: toMs(p.ts) }))
-      .filter(p => p.ts >= start && p.ts <= end);
-  }, [liveData, latestTs]);
-
-  // (optional) keep memory under control
-  useEffect(() => {
-    if (liveData.length > 5000) {
-      const cutoff = latestTs - 5 * 60_000;
-      setLiveData(prev => prev.filter(p => toMs(p.ts) >= cutoff));
-    }
-  }, [liveData.length, latestTs]);
-
-  // Update ref when showLandmarks changes
-  useEffect(() => { 
-    showLandmarksRef.current = showLandmarks; 
-  }, [showLandmarks]);
-
-  // Update refs when recording states change
-  useEffect(() => { 
-    isRecordingRef.current = isRecording; 
-  }, [isRecording]);
-
-  useEffect(() => { 
-    isPausedRef.current = isPaused; 
-  }, [isPaused]);
 
   // Debug logging for recording state changes
   useEffect(() => {
@@ -223,18 +85,9 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
           };
 
           setLiveData(prev => {
-            // When recording, keep all data but let the chart window control what's visible
-            const newData = [...prev, placeholderPoint];
-            
-            // Quick sanity check
-            if (newData.length % 30 === 0) {
-              const w = windowedData;
-              if (w.length) {
-                console.log('window range (ms):', w[0].ts, '→', w[w.length-1].ts, 'Δ=', w[w.length-1].ts - w[0].ts);
-              }
-            }
-            
-            return newData;
+            const fifteenSecondsAgo = now - 15000;
+            const filtered = prev.filter(point => point.ts > fifteenSecondsAgo);
+            return [...filtered, placeholderPoint];
           });
         }
       }
@@ -247,83 +100,33 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
   useEffect(() => {
     if (!videoRef.current || !canvasRef.current) return;
 
-    const initializeFaceMesh = async () => {
-      try {
-        console.log('Initializing MediaPipe Face Mesh...');
-        
-        // Clean up any existing instances
-        if (faceMeshRef.current) {
-          faceMeshRef.current.close();
-          faceMeshRef.current = null;
-        }
-        if (cameraRef.current) {
-          cameraRef.current.stop();
-          cameraRef.current = null;
-        }
-        
-        faceMeshRef.current = new FaceMesh({
-          locateFile: (file) => {
-            console.log('Loading MediaPipe file:', file);
-            // Try primary CDN first, fallback to alternative
-            const primaryUrl = `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
-            const fallbackUrl = `https://unpkg.com/@mediapipe/face_mesh/${file}`;
-            
-            // For WASM files, we'll use the primary CDN
-            if (file.endsWith('.wasm') || file.endsWith('.wasm.bin')) {
-              return primaryUrl;
-            }
-            
-            return primaryUrl;
-          }
-        });
-
-        faceMeshRef.current.setOptions({
-          maxNumFaces: 1,
-          refineLandmarks: true,
-          minDetectionConfidence: 0.5,
-          minTrackingConfidence: 0.5
-        });
-
-        faceMeshRef.current.onResults(onResults);
-
-        // Initialize camera
-        if (!videoRef.current) {
-          throw new Error('Video element not available');
-        }
-        
-        cameraRef.current = new Camera(videoRef.current, {
-          onFrame: async () => {
-            if (videoRef.current && faceMeshRef.current) {
-              try {
-                await faceMeshRef.current.send({ image: videoRef.current });
-              } catch (error) {
-                console.error('Error sending frame to FaceMesh:', error);
-              }
-            }
-          },
-          width: 640,
-          height: 480
-        });
-
-        await cameraRef.current.start();
-        console.log('MediaPipe Face Mesh initialized successfully');
-        setTrackingStatus('Initializing camera...');
-        setIsInitializing(false);
-        
-      } catch (error) {
-        console.error('Failed to initialize MediaPipe Face Mesh:', error);
-        setTrackingStatus('Failed to initialize - please refresh the page');
-        setIsInitializing(false);
-        
-        // Retry after 3 seconds
-        setTimeout(() => {
-          console.log('Retrying MediaPipe initialization...');
-          initializeFaceMesh();
-        }, 3000);
+    faceMeshRef.current = new FaceMesh({
+      locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
       }
-    };
+    });
 
-    initializeFaceMesh();
+    faceMeshRef.current.setOptions({
+      maxNumFaces: 1,
+      refineLandmarks: true,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+
+    faceMeshRef.current.onResults(onResults);
+
+    // Initialize camera
+    cameraRef.current = new Camera(videoRef.current, {
+      onFrame: async () => {
+        if (videoRef.current && faceMeshRef.current) {
+          await faceMeshRef.current.send({ image: videoRef.current });
+        }
+      },
+      width: 640,
+      height: 480
+    });
+
+    cameraRef.current.start();
 
     return () => {
       if (cameraRef.current) {
@@ -454,64 +257,23 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
     };
   }, []);
 
-  // Upload data to server every 200ms with enhanced streaming
+  // Upload data to server every 200ms
   useEffect(() => {
     if (!currentSessionId || uploadQueue.length === 0) return;
 
     const uploadInterval = setInterval(async () => {
-      if (uploadQueue.length > 0) {
+      if (uploadQueue.length > 0 && isRecording && !isPaused) {
         const pointsToUpload = [...uploadQueue];
         setUploadQueue([]);
 
         try {
-          console.log('Uploading batch of', pointsToUpload.length, 'points to session', currentSessionId);
-          
-          const response = await axios.post(`http://localhost:3000/sessions/${currentSessionId}/points`, {
+          await axios.post(`http://localhost:3000/sessions/${currentSessionId}/points`, {
             points: pointsToUpload
-          }, {
-            timeout: 5000, // 5 second timeout
-            headers: {
-              'Content-Type': 'application/json'
-            }
           });
-
-          console.log('Upload successful:', response.data);
-          
-          // Update tracking status with upload info
-          setTrackingStatus(prev => {
-            if (prev.includes('Recording')) {
-              return `Recording... Uploaded ${response.data.count} points`;
-            }
-            return prev;
-          });
-
-          updateUploadStats(response.data.count, 0, pointsToUpload.length); // Update stats
-
-        } catch (error: any) {
+        } catch (error) {
           console.error('Failed to upload points:', error);
-          
           // Re-add points to queue on failure
           setUploadQueue(prev => [...pointsToUpload, ...prev]);
-          
-          // Update upload stats with failure
-          updateUploadStats(0, pointsToUpload.length, pointsToUpload.length);
-          
-          // Update tracking status with error
-          setTrackingStatus(prev => {
-            if (prev.includes('Recording')) {
-              return `Recording... Upload failed - retrying`;
-            }
-            return prev;
-          });
-
-          // Log detailed error info
-          if (error.response) {
-            console.error('Server error:', error.response.data);
-          } else if (error.request) {
-            console.error('Network error:', error.request);
-          } else {
-            console.error('Error:', error.message);
-          }
         }
       }
     }, 200);
@@ -529,10 +291,8 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
     canvasCtx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
     canvasCtx.drawImage(results.image, 0, 0, canvasRef.current.width, canvasRef.current.height);
 
-    const drawLandmarks = showLandmarksRef.current; // <-- latest value
-
     // Test canvas drawing - draw a test circle to verify canvas works
-    if (debugMode && drawLandmarks) {
+    if (debugMode) {
       canvasCtx.fillStyle = 'lime';
       canvasCtx.beginPath();
       canvasCtx.arc(30, 30, 15, 0, 2 * Math.PI);
@@ -568,172 +328,160 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
         const validRightEyeLandmarks = rightEyeLandmarks.filter(landmark => landmark);
 
         if (validLeftEyeLandmarks.length > 0 && validRightEyeLandmarks.length > 0) {
-          // Get iris centers directly
-          const leftIrisCenter = landmarks[472]; // Left iris center
-          const rightIrisCenter = landmarks[477]; // Right iris center
+          // Calculate left eye center (average of all left eye landmarks)
+          const leftEyeX = validLeftEyeLandmarks.reduce((sum, landmark) => sum + landmark.x, 0) / validLeftEyeLandmarks.length;
+          const leftEyeY = validLeftEyeLandmarks.reduce((sum, landmark) => sum + landmark.y, 0) / validLeftEyeLandmarks.length;
           
-          if (leftIrisCenter && rightIrisCenter) {
-            const leftEyeX = leftIrisCenter.x;
-            const leftEyeY = leftIrisCenter.y;
-            const rightEyeX = rightIrisCenter.x;
-            const rightEyeY = rightIrisCenter.y;
+          // Calculate right eye center (average of all right eye landmarks)
+          const rightEyeX = validRightEyeLandmarks.reduce((sum, landmark) => sum + landmark.x, 0) / validRightEyeLandmarks.length;
+          const rightEyeY = validRightEyeLandmarks.reduce((sum, landmark) => sum + landmark.y, 0) / validRightEyeLandmarks.length;
+          
+          // Calculate overall eye position (average of both eyes)
+          const eyeX = (leftEyeX + rightEyeX) / 2;
+          const eyeY = (leftEyeY + rightEyeY) / 2;
+          
+          // Update debug info
+          setDebugInfo({
+            leftEye: { x: leftEyeX, y: leftEyeY },
+            rightEye: { x: rightEyeX, y: rightEyeY },
+            averageEye: { x: eyeX, y: eyeY },
+            faceDetected: true,
+            landmarksCount: landmarks.length
+          });
+
+          // Draw debug visualization if debug mode is enabled
+          if (showLandmarks) {
+            // Draw left eye landmarks
+            canvasCtx.fillStyle = 'rgba(255, 0, 0, 0.8)';
+            validLeftEyeLandmarks.forEach((landmark, index) => {
+              const x = landmark.x * canvasRef.current!.width;
+              const y = landmark.y * canvasRef.current!.height;
+              canvasCtx.beginPath();
+              canvasCtx.arc(x, y, 8, 0, 2 * Math.PI);
+              canvasCtx.fill();
+              canvasCtx.strokeStyle = 'white';
+              canvasCtx.lineWidth = 3;
+              canvasCtx.stroke();
+              
+              // Add label for key landmarks
+              if (index === 0) { // Center
+                canvasCtx.fillStyle = 'white';
+                canvasCtx.font = '12px Arial';
+                canvasCtx.fillText('L', x + 12, y + 4);
+              }
+            });
             
-            // Calculate eye position relative to eye socket (head-independent)
-            // Use eye corner landmarks for socket reference
-            const leftEyeCornerLeft = landmarks[145]; // Left eye left corner
-            const leftEyeCornerRight = landmarks[158]; // Left eye right corner
-            const rightEyeCornerLeft = landmarks[374]; // Right eye left corner  
-            const rightEyeCornerRight = landmarks[387]; // Right eye right corner
+            // Draw right eye landmarks
+            canvasCtx.fillStyle = 'rgba(0, 0, 255, 0.8)';
+            validRightEyeLandmarks.forEach((landmark, index) => {
+              const x = landmark.x * canvasRef.current!.width;
+              const y = landmark.y * canvasRef.current!.height;
+              canvasCtx.beginPath();
+              canvasCtx.arc(x, y, 8, 0, 2 * Math.PI);
+              canvasCtx.fill();
+              canvasCtx.strokeStyle = 'white';
+              canvasCtx.lineWidth = 3;
+              canvasCtx.stroke();
+              
+              // Add label for key landmarks
+              if (index === 0) { // Center
+                canvasCtx.fillStyle = 'white';
+                canvasCtx.font = '12px Arial';
+                canvasCtx.fillText('R', x + 12, y + 4);
+              }
+            });
             
-            if (leftEyeCornerLeft && leftEyeCornerRight && rightEyeCornerLeft && rightEyeCornerRight) {
-              // Calculate iris position relative to eye socket for left eye
-              const leftEyeWidth = leftEyeCornerRight.x - leftEyeCornerLeft.x;
-              const leftIrisPosition = leftEyeWidth > 0 ? (leftEyeX - leftEyeCornerLeft.x) / leftEyeWidth : 0.5;
-              
-              // Calculate iris position relative to eye socket for right eye
-              const rightEyeWidth = rightEyeCornerRight.x - rightEyeCornerLeft.x;
-              const rightIrisPosition = rightEyeWidth > 0 ? (rightEyeX - rightEyeCornerLeft.x) / rightEyeWidth : 0.5;
-              
-              // Average both eyes for final position
-              const eyeX = (leftIrisPosition + rightIrisPosition) / 2;
-              const eyeY = (leftEyeY + rightEyeY) / 2;
-              
-              // Classify iris side per eye (uses iris centers + corners)
-              const leftClass  = classifyIrisSide(landmarks, 472, 145, 158);
-              const rightClass = classifyIrisSide(landmarks, 477, 374, 387);
-              
-              // Get calibrated eye position
-              const calibratedEyeX = getCalibratedEyePosition(eyeX);
-              
-              // Update debug info
-              setDebugInfo({
-                leftEye: { x: leftEyeX, y: leftEyeY },
-                rightEye: { x: rightEyeX, y: rightEyeY },
-                averageEye: { x: eyeX, y: eyeY },
-                faceDetected: true,
-                landmarksCount: landmarks.length,
-                leftEyeSide: leftClass.eyeSide,
-                rightEyeSide: rightClass.eyeSide,
-                leftT: leftClass.t,
-                rightT: rightClass.t
+            // Draw eye centers with larger, more prominent dots
+            canvasCtx.fillStyle = 'rgba(0, 255, 0, 0.9)';
+            const leftCenterX = leftEyeX * canvasRef.current!.width;
+            const leftCenterY = leftEyeY * canvasRef.current!.height;
+            const rightCenterX = rightEyeX * canvasRef.current!.width;
+            const rightCenterY = rightEyeY * canvasRef.current!.height;
+            
+            canvasCtx.beginPath();
+            canvasCtx.arc(leftCenterX, leftCenterY, 12, 0, 2 * Math.PI);
+            canvasCtx.fill();
+            canvasCtx.strokeStyle = 'white';
+            canvasCtx.lineWidth = 3;
+            canvasCtx.stroke();
+            
+            canvasCtx.beginPath();
+            canvasCtx.arc(rightCenterX, rightCenterY, 12, 0, 2 * Math.PI);
+            canvasCtx.fill();
+            canvasCtx.strokeStyle = 'white';
+            canvasCtx.lineWidth = 3;
+            canvasCtx.stroke();
+            
+            // Draw average eye position with the most prominent visualization
+            canvasCtx.fillStyle = 'rgba(255, 255, 0, 0.9)';
+            const avgX = eyeX * canvasRef.current!.width;
+            const avgY = eyeY * canvasRef.current!.height;
+            canvasCtx.beginPath();
+            canvasCtx.arc(avgX, avgY, 15, 0, 2 * Math.PI);
+            canvasCtx.fill();
+            canvasCtx.strokeStyle = 'black';
+            canvasCtx.lineWidth = 4;
+            canvasCtx.stroke();
+            
+            // Draw crosshair at average position
+            canvasCtx.strokeStyle = 'black';
+            canvasCtx.lineWidth = 4;
+            canvasCtx.beginPath();
+            canvasCtx.moveTo(avgX - 20, avgY);
+            canvasCtx.lineTo(avgX + 20, avgY);
+            canvasCtx.moveTo(avgX, avgY - 20);
+            canvasCtx.lineTo(avgX, avgY + 20);
+            canvasCtx.stroke();
+            
+            // Add label for average position
+            canvasCtx.fillStyle = 'black';
+            canvasCtx.font = 'bold 14px Arial';
+            canvasCtx.fillText('AVG', avgX + 20, avgY - 20);
+          }
+          
+          // Create data point
+          const point: Point = {
+            ts: Date.now(),
+            x: eyeX,
+            confidence: 0.8 // You could calculate this based on landmark confidence
+          };
+
+          console.log('Eye position detected:', eyeX, 'Recording state:', { isRecording, isPaused });
+
+          // Update live data directly for immediate visualization
+          if (isRecording && !isPaused) {
+            console.log('Recording is active, updating live data with eyeX:', eyeX);
+            setTrackingStatus(`Recording... Eye position: ${eyeX.toFixed(3)}`);
+            
+            setLiveData(prev => {
+              const now = Date.now();
+              const fifteenSecondsAgo = now - 15000;
+              const filtered = prev.filter(point => point.ts > fifteenSecondsAgo);
+              const newData = [...filtered, point];
+              console.log('Live data updated:', newData.length, 'points, latest eyeX:', point.x);
+              return newData;
+            });
+
+            // Send to worker for processing and upload
+            if (workerRef.current) {
+              workerRef.current.postMessage({
+                type: 'process',
+                data: { points: [point] }
               });
-
-              // Draw debug visualization if landmarks are enabled
-              if (drawLandmarks) {
-                // Draw left eye landmarks
-                canvasCtx.fillStyle = 'rgba(255, 0, 0, 0.8)';
-                validLeftEyeLandmarks.forEach((landmark, index) => {
-                  const x = landmark.x * canvasRef.current!.width;
-                  const y = landmark.y * canvasRef.current!.height;
-                  canvasCtx.beginPath();
-                  canvasCtx.arc(x, y, 2, 0, 2 * Math.PI);
-                  canvasCtx.fill();
-                  canvasCtx.strokeStyle = 'white';
-                  canvasCtx.lineWidth = 1;
-                  canvasCtx.stroke();
-                  
-                  // Add label for key landmarks
-                  if (index === 0) { // Center
-                    canvasCtx.fillStyle = 'white';
-                    canvasCtx.font = '10px Arial';
-                    canvasCtx.fillText('L', x + 8, y + 3);
-                  }
-                });
-                
-                // Draw right eye landmarks
-                canvasCtx.fillStyle = 'rgba(0, 0, 255, 0.8)';
-                validRightEyeLandmarks.forEach((landmark, index) => {
-                  const x = landmark.x * canvasRef.current!.width;
-                  const y = landmark.y * canvasRef.current!.height;
-                  canvasCtx.beginPath();
-                  canvasCtx.arc(x, y, 2, 0, 2 * Math.PI);
-                  canvasCtx.fill();
-                  canvasCtx.strokeStyle = 'white';
-                  canvasCtx.lineWidth = 1;
-                  canvasCtx.stroke();
-                  
-                  // Add label for key landmarks
-                  if (index === 0) { // Center
-                    canvasCtx.fillStyle = 'white';
-                    canvasCtx.font = '10px Arial';
-                    canvasCtx.fillText('R', x + 8, y + 3);
-                  }
-                });
-                
-                // Draw eye centers with smaller dots
-                canvasCtx.fillStyle = 'rgba(0, 255, 0, 0.9)';
-                const leftCenterX = leftEyeX * canvasRef.current!.width;
-                const leftCenterY = leftEyeY * canvasRef.current!.height;
-                const rightCenterX = rightEyeX * canvasRef.current!.width;
-                const rightCenterY = rightEyeY * canvasRef.current!.height;
-                
-                canvasCtx.beginPath();
-                canvasCtx.arc(leftCenterX, leftCenterY, 4, 0, 2 * Math.PI);
-                canvasCtx.fill();
-                canvasCtx.strokeStyle = 'white';
-                canvasCtx.lineWidth = 2;
-                canvasCtx.stroke();
-                
-                canvasCtx.beginPath();
-                canvasCtx.arc(rightCenterX, rightCenterY, 4, 0, 2 * Math.PI);
-                canvasCtx.fill();
-                canvasCtx.strokeStyle = 'white';
-                canvasCtx.lineWidth = 2;
-                canvasCtx.stroke();
-              }
-              
-              // Create data point with calibrated position
-              const point: Point = {
-                ts: Date.now(),
-                x: calibratedEyeX,
-                confidence: 0.8 // You could calculate this based on landmark confidence
-              };
-
-              console.log('Eye position detected:', { raw: eyeX, calibrated: calibratedEyeX }, 'Recording state:', { isRecording: isRecordingRef.current, isPaused: isPausedRef.current });
-
-              // Update live data directly for immediate visualization
-              if (isRecordingRef.current && !isPausedRef.current) {
-                console.log('Recording is active, updating live data with eyeX:', eyeX);
-                setTrackingStatus(`Recording... Eye position: ${eyeX.toFixed(3)}`);
-                
-                setLiveData(prev => [...prev, point]);
-
-                // Quick sanity check
-                if (liveData.length % 30 === 0) {
-                  const w = windowedData;
-                  if (w.length) {
-                    console.log('window range (ms):', w[0].ts, '→', w[w.length-1].ts, 'Δ=', w[w.length-1].ts - w[0].ts);
-                  }
-                }
-
-                // Send to worker for processing and upload
-                if (workerRef.current) {
-                  workerRef.current.postMessage({
-                    type: 'process',
-                    data: { points: [point] }
-                  });
-                }
-                setLastRealDataTime(Date.now()); // Update last real data time
-              } else {
-                console.log('Not recording - isRecording:', isRecordingRef.current, 'isPaused:', isPausedRef.current);
-                // Always update live data for chart visualization, regardless of any button states
-                setLiveData(prev => [...prev, point]);
-
-                // Quick sanity check
-                if (liveData.length % 30 === 0) {
-                  const w = windowedData;
-                  if (w.length) {
-                    console.log('window range (ms):', w[0].ts, '→', w[w.length-1].ts, 'Δ=', w[w.length-1].ts - w[0].ts);
-                  }
-                }
-              }
-            } else {
-              console.log('Eye corner landmarks not found');
-              setDebugInfo(prev => ({ ...prev, faceDetected: false }));
             }
+            setLastRealDataTime(Date.now()); // Update last real data time
           } else {
-            console.log('Iris center landmarks not found');
-            setDebugInfo(prev => ({ ...prev, faceDetected: false }));
+            console.log('Not recording - isRecording:', isRecording, 'isPaused:', isPaused);
+            // Even when not recording, update debug info for visualization
+            if (showLandmarks) {
+              setLiveData(prev => {
+                const now = Date.now();
+                const fifteenSecondsAgo = now - 15000;
+                const filtered = prev.filter(point => point.ts > fifteenSecondsAgo);
+                const newData = [...filtered, point];
+                return newData;
+              });
+            }
           }
         } else {
           console.log('Eye landmarks not found:', { validLeftEyeLandmarks, validRightEyeLandmarks });
@@ -747,7 +495,7 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
     }
 
     canvasCtx.restore();
-  }, []); // <-- no deps
+  }, [isRecording, isPaused, showLandmarks]);
 
   const createSession = async () => {
     try {
@@ -776,13 +524,7 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
     console.log('Setting recording to true...');
     setIsRecording(true);
     setIsPaused(false);
-    
     console.log('Recording state should now be true');
-    
-    // Fetch initial session stats
-    if (currentSessionId) {
-      await fetchSessionStats(currentSessionId);
-    }
   };
 
   const pauseRecording = () => {
@@ -795,186 +537,26 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
     setIsPaused(false);
   };
 
-  const stopRecording = async () => {
+  const stopRecording = () => {
     console.log('Stop recording clicked');
     setIsRecording(false);
     setIsPaused(false);
-    
-    // Upload any remaining points in the queue
-    if (currentSessionId && uploadQueue.length > 0) {
-      console.log('Uploading final batch of', uploadQueue.length, 'points');
-      const pointsToUpload = [...uploadQueue];
-      setUploadQueue([]);
-      
-      try {
-        const response = await axios.post(`http://localhost:3000/sessions/${currentSessionId}/points`, {
-          points: pointsToUpload
-        }, {
-          timeout: 5000,
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        });
-        
-        console.log('Final upload successful:', response.data);
-        updateUploadStats(response.data.count, 0, pointsToUpload.length);
-      } catch (error: any) {
-        console.error('Failed to upload final points:', error);
-        updateUploadStats(0, pointsToUpload.length, pointsToUpload.length);
-      }
-    }
-    
-    // Check if session has data, if not, clean it up
-    if (currentSessionId && uploadStats.totalUploaded === 0) {
-      console.log('Cleaning up empty session:', currentSessionId);
-      cleanupEmptySession(currentSessionId);
-    }
-  };
-
-  const cleanupEmptySession = async (sessionId: string) => {
-    try {
-      await axios.delete(`http://localhost:3000/sessions/${sessionId}`);
-      console.log('Empty session cleaned up:', sessionId);
-      setCurrentSessionId(null);
-    } catch (error) {
-      console.error('Failed to cleanup empty session:', error);
-    }
-  };
-
-  const fetchSessionStats = async (sessionId: string) => {
-    try {
-      const response = await axios.get(`http://localhost:3000/sessions/${sessionId}/points/stats`);
-      setSessionStats({
-        totalPoints: response.data.totalPoints,
-        duration: response.data.duration,
-        uploadRate: response.data.totalPoints / Math.max(response.data.duration, 1),
-        lastUpload: Date.now()
-      });
-      console.log('Session stats loaded:', response.data);
-    } catch (error) {
-      console.error('Failed to fetch session stats:', error);
-    }
-  };
-
-  const updateUploadStats = (uploaded: number, failed: number, batchSize: number) => {
-    setUploadStats(prev => {
-      const newTotalUploaded = prev.totalUploaded + uploaded;
-      const newTotalFailed = prev.totalFailed + failed;
-      const newAverageBatchSize = (prev.averageBatchSize + batchSize) / 2;
-      
-      return {
-        totalUploaded: newTotalUploaded,
-        totalFailed: newTotalFailed,
-        averageBatchSize: newAverageBatchSize
-      };
-    });
   };
 
   const calibrate = (position: 'left' | 'center' | 'right') => {
     setIsCalibrating(true);
     setCalibrationStep(position);
-    setCalibrationCountdown(3);
     
-    // Clear previous samples for this position
-    setCalibrationSamples(prev => ({
-      ...prev,
-      [position]: []
-    }));
-    
-    // Start countdown
-    const countdownInterval = setInterval(() => {
-      setCalibrationCountdown(prev => {
-        if (prev <= 1) {
-          clearInterval(countdownInterval);
-          // Start collecting samples
-          startCalibrationSampling(position);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    // In a real implementation, you'd capture the current eye position
+    // For now, we'll use preset values
+    setTimeout(() => {
+      setCalibrationStep(null);
+      setIsCalibrating(false);
+    }, 2000);
   };
-
-  const startCalibrationSampling = (position: 'left' | 'center' | 'right') => {
-    const sampleDuration = 2000; // 2 seconds of sampling
-    const sampleInterval = 100; // Sample every 100ms
-    let samplesCollected = 0;
-    
-    const samplingInterval = setInterval(() => {
-      // Get current eye position from debug info
-      const currentEyePos = debugInfo.averageEye;
-      
-      if (currentEyePos) {
-        setCalibrationSamples(prev => ({
-          ...prev,
-          [position]: [...prev[position], { x: currentEyePos.x, y: currentEyePos.y }]
-        }));
-        samplesCollected++;
-      }
-      
-      if (samplesCollected >= sampleDuration / sampleInterval) {
-        clearInterval(samplingInterval);
-        finishCalibration(position);
-      }
-    }, sampleInterval);
-  };
-
-  const finishCalibration = (position: 'left' | 'center' | 'right') => {
-    const samples = calibrationSamples[position];
-    
-    if (samples.length > 0) {
-      // Calculate average position from samples
-      const avgX = samples.reduce((sum, sample) => sum + sample.x, 0) / samples.length;
-      const avgY = samples.reduce((sum, sample) => sum + sample.y, 0) / samples.length;
-      
-      setCalibrationData(prev => ({
-        ...prev,
-        [position]: { x: avgX, y: avgY }
-      }));
-      
-      console.log(`Calibration ${position} completed:`, { x: avgX, y: avgY });
-    }
-    
-    setCalibrationStep(null);
-    setIsCalibrating(false);
-  };
-
-  const getCalibratedEyePosition = (rawX: number): number => {
-    const { left, center, right } = calibrationData;
-    
-    // If we don't have all calibration points, return raw position
-    if (!left || !center || !right) {
-      return clamp(rawX, -1, 1);
-    }
-    
-    // Map raw eye position to -1 to +1 scale
-    let calibratedX: number;
-    if (rawX <= center.x) {
-      // Map from left to center (rawX: left.x -> center.x, output: -1 -> 0)
-      const range = center.x - left.x;
-      const position = rawX - left.x;
-      calibratedX = -1 + (position / range);
-    } else {
-      // Map from center to right (rawX: center.x -> right.x, output: 0 -> +1)
-      const range = right.x - center.x;
-      const position = rawX - center.x;
-      calibratedX = position / range;
-    }
-    
-    // Clamp to ensure it stays within -1 to +1 range
-    return clamp(calibratedX, -1, 1);
-  };
-
 
   return (
     <div className="eye-tracker">
-      <style>{`
-        @keyframes pulse {
-          0% { transform: translate(-50%, -50%) scale(1); }
-          50% { transform: translate(-50%, -50%) scale(1.2); }
-          100% { transform: translate(-50%, -50%) scale(1); }
-        }
-      `}</style>
       <div className="video-container">
         <video
           ref={videoRef}
@@ -988,24 +570,6 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
           height={480}
           style={{ border: '1px solid #ccc' }}
         />
-        {isInitializing && (
-          <div style={{
-            position: 'absolute',
-            top: '50%',
-            left: '50%',
-            transform: 'translate(-50%, -50%)',
-            backgroundColor: 'rgba(0, 0, 0, 0.8)',
-            color: 'white',
-            padding: '20px',
-            borderRadius: '8px',
-            textAlign: 'center'
-          }}>
-            <div>Loading MediaPipe...</div>
-            <div style={{ fontSize: '12px', marginTop: '10px' }}>
-              This may take a few seconds
-            </div>
-          </div>
-        )}
         {showLandmarks && (
           <div className="landmark-legend" style={{
             backgroundColor: 'rgba(0, 0, 0, 0.8)',
@@ -1054,7 +618,7 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
               marginBottom: '10px'
             }}
           >
-            {debugMode ? 'Debug Mode ON' : 'Debug Mode OFF'}
+            {debugMode ? '🔴 Debug Mode ON' : '🔵 Debug Mode OFF'}
           </button>
           
           <button 
@@ -1071,7 +635,7 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
               marginLeft: '10px'
             }}
           >
-            {showLandmarks ? 'Landmarks ON' : 'Landmarks OFF'}
+            {showLandmarks ? '👁️ Landmarks ON' : '👁️ Landmarks OFF'}
           </button>
           
           {debugMode && (
@@ -1094,20 +658,6 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
               )}
               {debugInfo.averageEye && (
                 <div><strong>Average Eye:</strong> X: {debugInfo.averageEye.x.toFixed(3)}, Y: {debugInfo.averageEye.y.toFixed(3)}</div>
-              )}
-              <div><strong>Left Eye Side:</strong> {debugInfo.leftEyeSide} (t={Number.isFinite(debugInfo.leftT) ? debugInfo.leftT!.toFixed(3) : 'n/a'})</div>
-              <div><strong>Right Eye Side:</strong> {debugInfo.rightEyeSide} (t={Number.isFinite(debugInfo.rightT) ? debugInfo.rightT!.toFixed(3) : 'n/a'})</div>
-              {isCalibrating && (
-                <div><strong>Calibrating:</strong> {calibrationStep} ({calibrationCountdown})</div>
-              )}
-              {calibrationData.left && (
-                <div><strong>Calib Left:</strong> X: {calibrationData.left.x.toFixed(3)}, Y: {calibrationData.left.y.toFixed(3)}</div>
-              )}
-              {calibrationData.center && (
-                <div><strong>Calib Center:</strong> X: {calibrationData.center.x.toFixed(3)}, Y: {calibrationData.center.y.toFixed(3)}</div>
-              )}
-              {calibrationData.right && (
-                <div><strong>Calib Right:</strong> X: {calibrationData.right.x.toFixed(3)}, Y: {calibrationData.right.y.toFixed(3)}</div>
               )}
             </div>
           )}
@@ -1165,28 +715,6 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
             Session ID: {currentSessionId}
           </div>
         )}
-
-        {isRecording && sessionStats && (
-          <div className="session-stats" style={{
-            backgroundColor: '#f8f9fa',
-            border: '1px solid #dee2e6',
-            borderRadius: '4px',
-            padding: '10px',
-            marginTop: '10px',
-            fontSize: '12px',
-            fontFamily: 'monospace'
-          }}>
-            <div style={{ fontWeight: 'bold', marginBottom: '5px' }}>Recording Statistics:</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px' }}>
-              <div>Total Points: {sessionStats.totalPoints}</div>
-              <div>Duration: {sessionStats.duration}s</div>
-              <div>Upload Rate: {sessionStats.uploadRate.toFixed(1)} pts/s</div>
-              <div>Uploaded: {uploadStats.totalUploaded}</div>
-              <div>Failed: {uploadStats.totalFailed}</div>
-              <div>Avg Batch: {uploadStats.averageBatchSize.toFixed(1)}</div>
-            </div>
-          </div>
-        )}
       </div>
 
       <div className={`live-chart ${isRecording && !isPaused ? 'live' : ''}`}>
@@ -1199,7 +727,7 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
           Paused: {isPaused ? 'Yes' : 'No'} | Session: {currentSessionId ? 'Active' : 'None'} |
           {isRecording && !isPaused && (
             <span style={{ color: '#51cf66', animation: 'pulse 1s infinite' }}>
-              LIVE
+              ● LIVE
             </span>
           )}
           {isRecording && !isPaused && Date.now() - lastRealDataTime < 1000 && (
@@ -1214,32 +742,54 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
           )}
         </div>
         <ResponsiveContainer width="100%" height={200}>
-          <LineChart data={windowedData}>
+          <LineChart data={liveData}>
             <CartesianGrid strokeDasharray="3 3" />
-            <XAxis
-              key={Math.floor(latestTs / 200)}         // forces rescale ~5x/sec
-              dataKey="ts"
+            <XAxis 
+              dataKey="ts" 
               type="number"
-              domain={[latestTs - WINDOW_MS, latestTs]} // hard 15s window
-              allowDataOverflow
-              tickFormatter={(v) =>
-                new Date(v).toLocaleTimeString('en-US', {
-                  hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'
-                })
-              }
+              domain={['dataMin', 'dataMax']}
+              tickFormatter={(value) => {
+                const date = new Date(value);
+                return date.toLocaleTimeString('en-US', { 
+                  hour12: false, 
+                  hour: '2-digit', 
+                  minute: '2-digit', 
+                  second: '2-digit' 
+                });
+              }}
             />
-            <YAxis domain={[-1, 1]} tickFormatter={(v) => v.toFixed(2)} ticks={[-1,-0.5,0,0.5,1]} width={50}/>
-            <Tooltip content={<SingleValueTooltip />} />
-            <Line dataKey="x" name="main" stroke="#ff6b35" strokeWidth={2} dot={false} isAnimationActive={false}/>
-            {isRecording && !isPaused && windowedData.length > 0 && (
-              <Line
-                dataKey="x"
-                name="highlight"
-                stroke="#51cf66"
+            <YAxis domain={[0, 1]} />
+            <Tooltip 
+              labelFormatter={(value) => {
+                const date = new Date(value);
+                return date.toLocaleTimeString('en-US', { 
+                  hour12: false, 
+                  hour: '2-digit', 
+                  minute: '2-digit', 
+                  second: '2-digit'
+                });
+              }}
+              formatter={(value: any) => [value, 'Eye Position']}
+            />
+            <Line 
+              type="monotone" 
+              dataKey="x" 
+              stroke="#8884d8" 
+              strokeWidth={2}
+              dot={false}
+              isAnimationActive={false}
+              connectNulls={false}
+            />
+            {isRecording && !isPaused && liveData.length > 0 && (
+              <Line 
+                type="monotone" 
+                dataKey="x" 
+                stroke="#51cf66" 
                 strokeWidth={3}
-                dot={{ r: 3 }}
-                isAnimationActive
-                data={windowedData.slice(-5)}
+                dot={{ fill: '#51cf66', strokeWidth: 2, r: 3 }}
+                isAnimationActive={true}
+                connectNulls={false}
+                data={liveData.slice(-5)} // Show last 5 points with dots
               />
             )}
           </LineChart>
@@ -1247,56 +797,10 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
       </div>
 
       {isCalibrating && (
-        <div className="calibration-overlay" style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          width: '100vw',
-          height: '100vh',
-          backgroundColor: 'rgba(0, 0, 0, 0.7)',
-          zIndex: 1000,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center'
-        }}>
-          {calibrationCountdown > 0 ? (
-            <div className="calibration-countdown" style={{
-              color: 'white',
-              fontSize: '48px',
-              fontWeight: 'bold',
-              textAlign: 'center'
-            }}>
-              <div>Look at the dot in {calibrationCountdown}...</div>
-            </div>
-          ) : (
-            <div className="calibration-dot" style={{
-              position: 'absolute',
-              width: '20px',
-              height: '20px',
-              backgroundColor: '#ff6b6b',
-              borderRadius: '50%',
-              border: '3px solid white',
-              boxShadow: '0 0 20px rgba(255, 107, 107, 0.8)',
-              left: calibrationStep === 'left' ? '10%' : calibrationStep === 'right' ? '90%' : '50%',
-              top: '50%',
-              transform: 'translate(-50%, -50%)',
-              animation: 'pulse 1s infinite'
-            }}>
-              <div style={{
-                position: 'absolute',
-                top: '30px',
-                left: '50%',
-                transform: 'translateX(-50%)',
-                color: 'white',
-                fontSize: '16px',
-                fontWeight: 'bold',
-                textAlign: 'center',
-                whiteSpace: 'nowrap'
-              }}>
-                Look Here
-              </div>
-            </div>
-          )}
+        <div className="calibration-overlay">
+          <div className="calibration-message">
+            Look at the {calibrationStep} position...
+          </div>
         </div>
       )}
     </div>
