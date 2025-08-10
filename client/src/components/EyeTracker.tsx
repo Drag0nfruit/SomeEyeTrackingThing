@@ -39,6 +39,25 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
   const [lastRealDataTime, setLastRealDataTime] = useState<number>(0);
   const [debugMode, setDebugMode] = useState<boolean>(false);
   const [showLandmarks, setShowLandmarks] = useState<boolean>(true);
+  const [isInitializing, setIsInitializing] = useState<boolean>(true);
+  const [sessionStats, setSessionStats] = useState<{
+    totalPoints: number;
+    duration: number;
+    uploadRate: number;
+    lastUpload: number;
+  } | null>(null);
+  const [uploadStats, setUploadStats] = useState<{
+    totalUploaded: number;
+    totalFailed: number;
+    averageBatchSize: number;
+  }>({
+    totalUploaded: 0,
+    totalFailed: 0,
+    averageBatchSize: 0
+  });
+  const showLandmarksRef = useRef(showLandmarks);
+  const isRecordingRef = useRef(isRecording);
+  const isPausedRef = useRef(isPaused);
   const [debugInfo, setDebugInfo] = useState<{
     leftEye: { x: number; y: number } | null;
     rightEye: { x: number; y: number } | null;
@@ -52,6 +71,20 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
     faceDetected: false,
     landmarksCount: 0
   });
+
+  // Update ref when showLandmarks changes
+  useEffect(() => { 
+    showLandmarksRef.current = showLandmarks; 
+  }, [showLandmarks]);
+
+  // Update refs when recording states change
+  useEffect(() => { 
+    isRecordingRef.current = isRecording; 
+  }, [isRecording]);
+
+  useEffect(() => { 
+    isPausedRef.current = isPaused; 
+  }, [isPaused]);
 
   // Debug logging for recording state changes
   useEffect(() => {
@@ -100,33 +133,83 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
   useEffect(() => {
     if (!videoRef.current || !canvasRef.current) return;
 
-    faceMeshRef.current = new FaceMesh({
-      locateFile: (file) => {
-        return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
-      }
-    });
-
-    faceMeshRef.current.setOptions({
-      maxNumFaces: 1,
-      refineLandmarks: true,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
-    });
-
-    faceMeshRef.current.onResults(onResults);
-
-    // Initialize camera
-    cameraRef.current = new Camera(videoRef.current, {
-      onFrame: async () => {
-        if (videoRef.current && faceMeshRef.current) {
-          await faceMeshRef.current.send({ image: videoRef.current });
+    const initializeFaceMesh = async () => {
+      try {
+        console.log('Initializing MediaPipe Face Mesh...');
+        
+        // Clean up any existing instances
+        if (faceMeshRef.current) {
+          faceMeshRef.current.close();
+          faceMeshRef.current = null;
         }
-      },
-      width: 640,
-      height: 480
-    });
+        if (cameraRef.current) {
+          cameraRef.current.stop();
+          cameraRef.current = null;
+        }
+        
+        faceMeshRef.current = new FaceMesh({
+          locateFile: (file) => {
+            console.log('Loading MediaPipe file:', file);
+            // Try primary CDN first, fallback to alternative
+            const primaryUrl = `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+            const fallbackUrl = `https://unpkg.com/@mediapipe/face_mesh/${file}`;
+            
+            // For WASM files, we'll use the primary CDN
+            if (file.endsWith('.wasm') || file.endsWith('.wasm.bin')) {
+              return primaryUrl;
+            }
+            
+            return primaryUrl;
+          }
+        });
 
-    cameraRef.current.start();
+        faceMeshRef.current.setOptions({
+          maxNumFaces: 1,
+          refineLandmarks: true,
+          minDetectionConfidence: 0.5,
+          minTrackingConfidence: 0.5
+        });
+
+        faceMeshRef.current.onResults(onResults);
+
+        // Initialize camera
+        if (!videoRef.current) {
+          throw new Error('Video element not available');
+        }
+        
+        cameraRef.current = new Camera(videoRef.current, {
+          onFrame: async () => {
+            if (videoRef.current && faceMeshRef.current) {
+              try {
+                await faceMeshRef.current.send({ image: videoRef.current });
+              } catch (error) {
+                console.error('Error sending frame to FaceMesh:', error);
+              }
+            }
+          },
+          width: 640,
+          height: 480
+        });
+
+        await cameraRef.current.start();
+        console.log('MediaPipe Face Mesh initialized successfully');
+        setTrackingStatus('Initializing camera...');
+        setIsInitializing(false);
+        
+      } catch (error) {
+        console.error('Failed to initialize MediaPipe Face Mesh:', error);
+        setTrackingStatus('Failed to initialize - please refresh the page');
+        setIsInitializing(false);
+        
+        // Retry after 3 seconds
+        setTimeout(() => {
+          console.log('Retrying MediaPipe initialization...');
+          initializeFaceMesh();
+        }, 3000);
+      }
+    };
+
+    initializeFaceMesh();
 
     return () => {
       if (cameraRef.current) {
@@ -257,7 +340,7 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
     };
   }, []);
 
-  // Upload data to server every 200ms
+  // Upload data to server every 200ms with enhanced streaming
   useEffect(() => {
     if (!currentSessionId || uploadQueue.length === 0) return;
 
@@ -267,13 +350,54 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
         setUploadQueue([]);
 
         try {
-          await axios.post(`http://localhost:3000/sessions/${currentSessionId}/points`, {
+          console.log('Uploading batch of', pointsToUpload.length, 'points to session', currentSessionId);
+          
+          const response = await axios.post(`http://localhost:3000/sessions/${currentSessionId}/points`, {
             points: pointsToUpload
+          }, {
+            timeout: 5000, // 5 second timeout
+            headers: {
+              'Content-Type': 'application/json'
+            }
           });
-        } catch (error) {
+
+          console.log('Upload successful:', response.data);
+          
+          // Update tracking status with upload info
+          setTrackingStatus(prev => {
+            if (prev.includes('Recording')) {
+              return `Recording... Uploaded ${response.data.count} points`;
+            }
+            return prev;
+          });
+
+          updateUploadStats(response.data.count, 0, pointsToUpload.length); // Update stats
+
+        } catch (error: any) {
           console.error('Failed to upload points:', error);
+          
           // Re-add points to queue on failure
           setUploadQueue(prev => [...pointsToUpload, ...prev]);
+          
+          // Update upload stats with failure
+          updateUploadStats(0, pointsToUpload.length, pointsToUpload.length);
+          
+          // Update tracking status with error
+          setTrackingStatus(prev => {
+            if (prev.includes('Recording')) {
+              return `Recording... Upload failed - retrying`;
+            }
+            return prev;
+          });
+
+          // Log detailed error info
+          if (error.response) {
+            console.error('Server error:', error.response.data);
+          } else if (error.request) {
+            console.error('Network error:', error.request);
+          } else {
+            console.error('Error:', error.message);
+          }
         }
       }
     }, 200);
@@ -291,8 +415,10 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
     canvasCtx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
     canvasCtx.drawImage(results.image, 0, 0, canvasRef.current.width, canvasRef.current.height);
 
+    const drawLandmarks = showLandmarksRef.current; // <-- latest value
+
     // Test canvas drawing - draw a test circle to verify canvas works
-    if (debugMode) {
+    if (debugMode && drawLandmarks) {
       canvasCtx.fillStyle = 'lime';
       canvasCtx.beginPath();
       canvasCtx.arc(30, 30, 15, 0, 2 * Math.PI);
@@ -349,25 +475,25 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
             landmarksCount: landmarks.length
           });
 
-          // Draw debug visualization if debug mode is enabled
-          if (showLandmarks) {
+          // Draw debug visualization if landmarks are enabled
+          if (drawLandmarks) {
             // Draw left eye landmarks
             canvasCtx.fillStyle = 'rgba(255, 0, 0, 0.8)';
             validLeftEyeLandmarks.forEach((landmark, index) => {
               const x = landmark.x * canvasRef.current!.width;
               const y = landmark.y * canvasRef.current!.height;
               canvasCtx.beginPath();
-              canvasCtx.arc(x, y, 8, 0, 2 * Math.PI);
+              canvasCtx.arc(x, y, 3, 0, 2 * Math.PI);
               canvasCtx.fill();
               canvasCtx.strokeStyle = 'white';
-              canvasCtx.lineWidth = 3;
+              canvasCtx.lineWidth = 1;
               canvasCtx.stroke();
               
               // Add label for key landmarks
               if (index === 0) { // Center
                 canvasCtx.fillStyle = 'white';
-                canvasCtx.font = '12px Arial';
-                canvasCtx.fillText('L', x + 12, y + 4);
+                canvasCtx.font = '10px Arial';
+                canvasCtx.fillText('L', x + 8, y + 3);
               }
             });
             
@@ -377,21 +503,21 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
               const x = landmark.x * canvasRef.current!.width;
               const y = landmark.y * canvasRef.current!.height;
               canvasCtx.beginPath();
-              canvasCtx.arc(x, y, 8, 0, 2 * Math.PI);
+              canvasCtx.arc(x, y, 3, 0, 2 * Math.PI);
               canvasCtx.fill();
               canvasCtx.strokeStyle = 'white';
-              canvasCtx.lineWidth = 3;
+              canvasCtx.lineWidth = 1;
               canvasCtx.stroke();
               
               // Add label for key landmarks
               if (index === 0) { // Center
                 canvasCtx.fillStyle = 'white';
-                canvasCtx.font = '12px Arial';
-                canvasCtx.fillText('R', x + 12, y + 4);
+                canvasCtx.font = '10px Arial';
+                canvasCtx.fillText('R', x + 8, y + 3);
               }
             });
             
-            // Draw eye centers with larger, more prominent dots
+            // Draw eye centers with smaller dots
             canvasCtx.fillStyle = 'rgba(0, 255, 0, 0.9)';
             const leftCenterX = leftEyeX * canvasRef.current!.width;
             const leftCenterY = leftEyeY * canvasRef.current!.height;
@@ -399,44 +525,44 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
             const rightCenterY = rightEyeY * canvasRef.current!.height;
             
             canvasCtx.beginPath();
-            canvasCtx.arc(leftCenterX, leftCenterY, 12, 0, 2 * Math.PI);
+            canvasCtx.arc(leftCenterX, leftCenterY, 6, 0, 2 * Math.PI);
             canvasCtx.fill();
             canvasCtx.strokeStyle = 'white';
-            canvasCtx.lineWidth = 3;
+            canvasCtx.lineWidth = 2;
             canvasCtx.stroke();
             
             canvasCtx.beginPath();
-            canvasCtx.arc(rightCenterX, rightCenterY, 12, 0, 2 * Math.PI);
+            canvasCtx.arc(rightCenterX, rightCenterY, 6, 0, 2 * Math.PI);
             canvasCtx.fill();
             canvasCtx.strokeStyle = 'white';
-            canvasCtx.lineWidth = 3;
+            canvasCtx.lineWidth = 2;
             canvasCtx.stroke();
             
-            // Draw average eye position with the most prominent visualization
+            // Draw average eye position with smaller dot
             canvasCtx.fillStyle = 'rgba(255, 255, 0, 0.9)';
             const avgX = eyeX * canvasRef.current!.width;
             const avgY = eyeY * canvasRef.current!.height;
             canvasCtx.beginPath();
-            canvasCtx.arc(avgX, avgY, 15, 0, 2 * Math.PI);
+            canvasCtx.arc(avgX, avgY, 8, 0, 2 * Math.PI);
             canvasCtx.fill();
             canvasCtx.strokeStyle = 'black';
-            canvasCtx.lineWidth = 4;
+            canvasCtx.lineWidth = 2;
             canvasCtx.stroke();
             
-            // Draw crosshair at average position
+            // Draw smaller crosshair at average position
             canvasCtx.strokeStyle = 'black';
-            canvasCtx.lineWidth = 4;
+            canvasCtx.lineWidth = 2;
             canvasCtx.beginPath();
-            canvasCtx.moveTo(avgX - 20, avgY);
-            canvasCtx.lineTo(avgX + 20, avgY);
-            canvasCtx.moveTo(avgX, avgY - 20);
-            canvasCtx.lineTo(avgX, avgY + 20);
+            canvasCtx.moveTo(avgX - 12, avgY);
+            canvasCtx.lineTo(avgX + 12, avgY);
+            canvasCtx.moveTo(avgX, avgY - 12);
+            canvasCtx.lineTo(avgX, avgY + 12);
             canvasCtx.stroke();
             
-            // Add label for average position
+            // Add smaller label for average position
             canvasCtx.fillStyle = 'black';
-            canvasCtx.font = 'bold 14px Arial';
-            canvasCtx.fillText('AVG', avgX + 20, avgY - 20);
+            canvasCtx.font = 'bold 12px Arial';
+            canvasCtx.fillText('AVG', avgX + 12, avgY - 12);
           }
           
           // Create data point
@@ -446,10 +572,10 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
             confidence: 0.8 // You could calculate this based on landmark confidence
           };
 
-          console.log('Eye position detected:', eyeX, 'Recording state:', { isRecording, isPaused });
+          console.log('Eye position detected:', eyeX, 'Recording state:', { isRecording: isRecordingRef.current, isPaused: isPausedRef.current });
 
           // Update live data directly for immediate visualization
-          if (isRecording && !isPaused) {
+          if (isRecordingRef.current && !isPausedRef.current) {
             console.log('Recording is active, updating live data with eyeX:', eyeX);
             setTrackingStatus(`Recording... Eye position: ${eyeX.toFixed(3)}`);
             
@@ -458,7 +584,7 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
               const fifteenSecondsAgo = now - 15000;
               const filtered = prev.filter(point => point.ts > fifteenSecondsAgo);
               const newData = [...filtered, point];
-              console.log('Live data updated:', newData.length, 'points, latest eyeX:', point.x);
+              console.log('Live data updated (RECORDING):', newData.length, 'points, latest eyeX:', point.x);
               return newData;
             });
 
@@ -471,17 +597,16 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
             }
             setLastRealDataTime(Date.now()); // Update last real data time
           } else {
-            console.log('Not recording - isRecording:', isRecording, 'isPaused:', isPaused);
-            // Even when not recording, update debug info for visualization
-            if (showLandmarks) {
-              setLiveData(prev => {
-                const now = Date.now();
-                const fifteenSecondsAgo = now - 15000;
-                const filtered = prev.filter(point => point.ts > fifteenSecondsAgo);
-                const newData = [...filtered, point];
-                return newData;
-              });
-            }
+            console.log('Not recording - isRecording:', isRecordingRef.current, 'isPaused:', isPausedRef.current);
+            // Always update live data for chart visualization, regardless of any button states
+            setLiveData(prev => {
+              const now = Date.now();
+              const fifteenSecondsAgo = now - 15000;
+              const filtered = prev.filter(point => point.ts > fifteenSecondsAgo);
+              const newData = [...filtered, point];
+              console.log('Live data updated (NOT RECORDING):', newData.length, 'points, latest eyeX:', point.x);
+              return newData;
+            });
           }
         } else {
           console.log('Eye landmarks not found:', { validLeftEyeLandmarks, validRightEyeLandmarks });
@@ -495,7 +620,7 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
     }
 
     canvasCtx.restore();
-  }, [isRecording, isPaused, showLandmarks]);
+  }, []); // <-- no deps
 
   const createSession = async () => {
     try {
@@ -525,6 +650,11 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
     setIsRecording(true);
     setIsPaused(false);
     console.log('Recording state should now be true');
+    
+    // Fetch initial session stats
+    if (currentSessionId) {
+      await fetchSessionStats(currentSessionId);
+    }
   };
 
   const pauseRecording = () => {
@@ -541,6 +671,51 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
     console.log('Stop recording clicked');
     setIsRecording(false);
     setIsPaused(false);
+    
+    // Check if session has data, if not, clean it up
+    if (currentSessionId && uploadStats.totalUploaded === 0) {
+      console.log('Cleaning up empty session:', currentSessionId);
+      cleanupEmptySession(currentSessionId);
+    }
+  };
+
+  const cleanupEmptySession = async (sessionId: string) => {
+    try {
+      await axios.delete(`http://localhost:3000/sessions/${sessionId}`);
+      console.log('Empty session cleaned up:', sessionId);
+      setCurrentSessionId(null);
+    } catch (error) {
+      console.error('Failed to cleanup empty session:', error);
+    }
+  };
+
+  const fetchSessionStats = async (sessionId: string) => {
+    try {
+      const response = await axios.get(`http://localhost:3000/sessions/${sessionId}/points/stats`);
+      setSessionStats({
+        totalPoints: response.data.totalPoints,
+        duration: response.data.duration,
+        uploadRate: response.data.totalPoints / Math.max(response.data.duration, 1),
+        lastUpload: Date.now()
+      });
+      console.log('Session stats loaded:', response.data);
+    } catch (error) {
+      console.error('Failed to fetch session stats:', error);
+    }
+  };
+
+  const updateUploadStats = (uploaded: number, failed: number, batchSize: number) => {
+    setUploadStats(prev => {
+      const newTotalUploaded = prev.totalUploaded + uploaded;
+      const newTotalFailed = prev.totalFailed + failed;
+      const newAverageBatchSize = (prev.averageBatchSize + batchSize) / 2;
+      
+      return {
+        totalUploaded: newTotalUploaded,
+        totalFailed: newTotalFailed,
+        averageBatchSize: newAverageBatchSize
+      };
+    });
   };
 
   const calibrate = (position: 'left' | 'center' | 'right') => {
@@ -554,6 +729,8 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
       setIsCalibrating(false);
     }, 2000);
   };
+
+
 
   return (
     <div className="eye-tracker">
@@ -570,6 +747,24 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
           height={480}
           style={{ border: '1px solid #ccc' }}
         />
+        {isInitializing && (
+          <div style={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            backgroundColor: 'rgba(0, 0, 0, 0.8)',
+            color: 'white',
+            padding: '20px',
+            borderRadius: '8px',
+            textAlign: 'center'
+          }}>
+            <div>Loading MediaPipe...</div>
+            <div style={{ fontSize: '12px', marginTop: '10px' }}>
+              This may take a few seconds
+            </div>
+          </div>
+        )}
         {showLandmarks && (
           <div className="landmark-legend" style={{
             backgroundColor: 'rgba(0, 0, 0, 0.8)',
@@ -618,7 +813,7 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
               marginBottom: '10px'
             }}
           >
-            {debugMode ? '🔴 Debug Mode ON' : '🔵 Debug Mode OFF'}
+            {debugMode ? 'Debug Mode ON' : 'Debug Mode OFF'}
           </button>
           
           <button 
@@ -635,7 +830,7 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
               marginLeft: '10px'
             }}
           >
-            {showLandmarks ? '👁️ Landmarks ON' : '👁️ Landmarks OFF'}
+            {showLandmarks ? 'Landmarks ON' : 'Landmarks OFF'}
           </button>
           
           {debugMode && (
@@ -715,6 +910,28 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
             Session ID: {currentSessionId}
           </div>
         )}
+
+        {isRecording && sessionStats && (
+          <div className="session-stats" style={{
+            backgroundColor: '#f8f9fa',
+            border: '1px solid #dee2e6',
+            borderRadius: '4px',
+            padding: '10px',
+            marginTop: '10px',
+            fontSize: '12px',
+            fontFamily: 'monospace'
+          }}>
+            <div style={{ fontWeight: 'bold', marginBottom: '5px' }}>Recording Statistics:</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px' }}>
+              <div>Total Points: {sessionStats.totalPoints}</div>
+              <div>Duration: {sessionStats.duration}s</div>
+              <div>Upload Rate: {sessionStats.uploadRate.toFixed(1)} pts/s</div>
+              <div>Uploaded: {uploadStats.totalUploaded}</div>
+              <div>Failed: {uploadStats.totalFailed}</div>
+              <div>Avg Batch: {uploadStats.averageBatchSize.toFixed(1)}</div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className={`live-chart ${isRecording && !isPaused ? 'live' : ''}`}>
@@ -727,7 +944,7 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
           Paused: {isPaused ? 'Yes' : 'No'} | Session: {currentSessionId ? 'Active' : 'None'} |
           {isRecording && !isPaused && (
             <span style={{ color: '#51cf66', animation: 'pulse 1s infinite' }}>
-              ● LIVE
+              LIVE
             </span>
           )}
           {isRecording && !isPaused && Date.now() - lastRealDataTime < 1000 && (
