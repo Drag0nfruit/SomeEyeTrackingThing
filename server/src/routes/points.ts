@@ -21,7 +21,7 @@ interface CreatePointsBody {
 class SignalProcessor {
   private static readonly MOVING_AVERAGE_WINDOW = 5;
   private static readonly OUTLIER_THRESHOLD = 0.1;
-  private static readonly MIN_CONFIDENCE = 0.3;
+  private static readonly MIN_CONFIDENCE = 0.1; // Reduced from 0.3 to be less aggressive
 
   // Moving average filter for smoothing
   static applyMovingAverageFilter(points: Point[], windowSize: number = this.MOVING_AVERAGE_WINDOW): Point[] {
@@ -143,6 +143,12 @@ export default async function pointsRoutes(fastify: FastifyInstance) {
       // Process points through signal processing pipeline
       const processedPoints = SignalProcessor.processPoints(points);
       
+      console.log(`Processing ${points.length} points for session ${sessionId}:`, {
+        original: points.length,
+        afterProcessing: processedPoints.length,
+        confidenceFiltered: points.length - processedPoints.length
+      });
+      
       // Prepare data for bulk insertion with better error handling
       const samplesData = processedPoints.map((point) => ({
         sessionId,
@@ -156,6 +162,8 @@ export default async function pointsRoutes(fastify: FastifyInstance) {
       const batchSize = 100;
       let totalInserted = 0;
       
+      console.log(`Inserting ${samplesData.length} processed points in batches of ${batchSize}`);
+      
       for (let i = 0; i < samplesData.length; i += batchSize) {
         const batch = samplesData.slice(i, i + batchSize);
         
@@ -164,6 +172,7 @@ export default async function pointsRoutes(fastify: FastifyInstance) {
             data: batch
           });
           totalInserted += result.count;
+          console.log(`Batch ${i / batchSize + 1}: Inserted ${result.count} points`);
         } catch (error) {
           console.error(`Error inserting batch ${i / batchSize + 1}:`, error);
           // Continue with next batch instead of failing completely

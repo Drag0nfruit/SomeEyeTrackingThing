@@ -20,6 +20,13 @@ const Sessions: React.FC = () => {
 
   useEffect(() => {
     fetchSessions()
+    
+    // Refresh sessions every 5 seconds to catch new recordings
+    const refreshInterval = setInterval(() => {
+      fetchSessions()
+    }, 5000)
+    
+    return () => clearInterval(refreshInterval)
   }, [])
 
   const fetchSessions = async () => {
@@ -60,6 +67,9 @@ const Sessions: React.FC = () => {
       <div className="page-header">
         <h1>Sessions</h1>
         <p>Browse and analyze previously recorded sessions</p>
+        <button onClick={fetchSessions} className="secondary-btn" style={{ marginTop: '1rem' }}>
+          Refresh Sessions
+        </button>
       </div>
       
 

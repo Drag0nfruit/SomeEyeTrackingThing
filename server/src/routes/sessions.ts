@@ -9,7 +9,46 @@ interface SessionParams {
   id: string;
 }
 
+interface CreateSessionBody {
+  deviceInfo?: string;
+  samplingRate: number;
+  calibLeft: number;
+  calibCenter: number;
+  calibRight: number;
+}
+
 export default async function sessionRoutes(fastify: FastifyInstance) {
+
+  // POST /sessions - Create a new session
+  fastify.post<{ Body: CreateSessionBody }>('/', async (request: FastifyRequest<{ Body: CreateSessionBody }>, reply: FastifyReply) => {
+    try {
+      const { deviceInfo, samplingRate, calibLeft, calibCenter, calibRight } = request.body;
+      
+      // Validate required fields
+      if (typeof samplingRate !== 'number' || samplingRate <= 0) {
+        return reply.status(400).send({ error: 'samplingRate must be a positive number' });
+      }
+      if (typeof calibLeft !== 'number' || typeof calibCenter !== 'number' || typeof calibRight !== 'number') {
+        return reply.status(400).send({ error: 'calibLeft, calibCenter, and calibRight must be numbers' });
+      }
+      
+      const session = await prisma.session.create({
+        data: {
+          deviceInfo: deviceInfo || 'Unknown Device',
+          samplingRate,
+          calibLeft,
+          calibCenter,
+          calibRight
+        }
+      });
+      
+      fastify.log.info(`Created new session: ${session.id}`);
+      return reply.status(201).send(session);
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.status(500).send({ error: 'Failed to create session' });
+    }
+  });
 
   // GET /sessions/:id - Get a specific session
   fastify.get<{ Params: SessionParams }>('/:id', async (request: FastifyRequest<{ Params: SessionParams }>, reply: FastifyReply) => {

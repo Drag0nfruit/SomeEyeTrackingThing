@@ -517,7 +517,7 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
     }, 200);
 
     return () => clearInterval(uploadInterval);
-  }, [currentSessionId, uploadQueue, isRecording, isPaused]);
+  }, [currentSessionId, uploadQueue]); // Removed isRecording and isPaused dependencies to allow uploads to continue after stopping
 
   const onResults = useCallback((results: any) => {
     if (!canvasRef.current || !videoRef.current) return;
@@ -812,10 +812,8 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
 
   const stopRecording = async () => {
     console.log('Stop recording clicked');
-    setIsRecording(false);
-    setIsPaused(false);
     
-    // Upload any remaining points in the queue
+    // Upload any remaining points in the queue BEFORE stopping recording
     if (currentSessionId && uploadQueue.length > 0) {
       console.log('Uploading final batch of', uploadQueue.length, 'points');
       const pointsToUpload = [...uploadQueue];
@@ -839,11 +837,36 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
       }
     }
     
-    // Check if session has data, if not, clean it up
-    if (currentSessionId && uploadStats.totalUploaded === 0) {
-      console.log('Cleaning up empty session:', currentSessionId);
-      cleanupEmptySession(currentSessionId);
-    }
+    // Now stop recording
+    setIsRecording(false);
+    setIsPaused(false);
+    setTrackingStatus('Saving session...');
+    
+    // Wait a moment for any remaining uploads to complete, then check if session has data
+    setTimeout(async () => {
+      if (currentSessionId) {
+        try {
+          // Fetch current session stats to see if data was actually saved
+          const response = await axios.get(`http://localhost:3000/sessions/${currentSessionId}/points/stats`);
+          const totalPoints = response.data.totalPoints;
+          
+          console.log('Session final stats:', { sessionId: currentSessionId, totalPoints });
+          
+          if (totalPoints === 0) {
+            console.log('Cleaning up empty session:', currentSessionId);
+            cleanupEmptySession(currentSessionId);
+            setTrackingStatus('Session was empty - cleaned up');
+          } else {
+            console.log('Session saved successfully with', totalPoints, 'points');
+            setTrackingStatus(`Session saved successfully with ${totalPoints} points`);
+            // Show success notification
+            alert(`Recording saved successfully! Session contains ${totalPoints} data points.`);
+          }
+        } catch (error) {
+          console.error('Failed to check session stats:', error);
+        }
+      }
+    }, 1000); // Wait 1 second for any pending uploads
   };
 
   const cleanupEmptySession = async (sessionId: string) => {
