@@ -3,41 +3,13 @@ import { PrismaClient } from '../../../node_modules/@prisma/client';
 
 const prisma = new PrismaClient();
 
-interface CreateSessionBody {
-  deviceInfo?: string;
-  samplingRate: number;
-  calibLeft: number;
-  calibCenter: number;
-  calibRight: number;
-}
+
 
 interface SessionParams {
   id: string;
 }
 
 export default async function sessionRoutes(fastify: FastifyInstance) {
-  // POST /sessions - Create a new session
-  fastify.post<{ Body: CreateSessionBody }>('/', async (request: FastifyRequest<{ Body: CreateSessionBody }>, reply: FastifyReply) => {
-    try {
-      const { deviceInfo, samplingRate, calibLeft, calibCenter, calibRight } = request.body;
-      
-      const session = await prisma.session.create({
-        data: {
-          deviceInfo,
-          samplingRate,
-          calibLeft,
-          calibCenter,
-          calibRight
-        }
-      });
-      
-      // Return only {id} as requested
-      return reply.status(201).send({ id: session.id });
-    } catch (error) {
-      fastify.log.error(error);
-      return reply.status(500).send({ error: 'Failed to create session' });
-    }
-  });
 
   // GET /sessions/:id - Get a specific session
   fastify.get<{ Params: SessionParams }>('/:id', async (request: FastifyRequest<{ Params: SessionParams }>, reply: FastifyReply) => {

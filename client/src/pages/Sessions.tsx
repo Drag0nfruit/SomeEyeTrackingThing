@@ -17,13 +17,6 @@ interface Session {
 const Sessions: React.FC = () => {
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading, setLoading] = useState(true)
-  const [newSession, setNewSession] = useState({
-    deviceInfo: '',
-    samplingRate: 60,
-    calibLeft: 0.0,
-    calibCenter: 0.5,
-    calibRight: 1.0
-  })
 
   useEffect(() => {
     fetchSessions()
@@ -41,29 +34,7 @@ const Sessions: React.FC = () => {
     }
   }
 
-  const createSession = async (e: React.FormEvent) => {
-    e.preventDefault()
-    try {
-      const response = await fetch('http://localhost:3000/sessions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(newSession),
-      })
-      const session = await response.json()
-      setSessions([session, ...sessions])
-      setNewSession({
-        deviceInfo: '',
-        samplingRate: 60,
-        calibLeft: 0.0,
-        calibCenter: 0.5,
-        calibRight: 1.0
-      })
-    } catch (error) {
-      console.error('Failed to create session:', error)
-    }
-  }
+
 
   const deleteSession = async (sessionId: string) => {
     try {
@@ -91,47 +62,7 @@ const Sessions: React.FC = () => {
         <p>Browse and analyze previously recorded sessions</p>
       </div>
       
-      <div className="create-session-form">
-        <h3>Create New Session</h3>
-        <form onSubmit={createSession}>
-          <div className="form-grid">
-            <input
-              type="text"
-              placeholder="Device Info (optional)"
-              value={newSession.deviceInfo}
-              onChange={(e) => setNewSession({ ...newSession, deviceInfo: e.target.value })}
-            />
-            <input
-              type="number"
-              placeholder="Sampling Rate (Hz)"
-              value={newSession.samplingRate}
-              onChange={(e) => setNewSession({ ...newSession, samplingRate: parseInt(e.target.value) })}
-            />
-            <input
-              type="number"
-              step="0.1"
-              placeholder="Calib Left"
-              value={newSession.calibLeft}
-              onChange={(e) => setNewSession({ ...newSession, calibLeft: parseFloat(e.target.value) })}
-            />
-            <input
-              type="number"
-              step="0.1"
-              placeholder="Calib Center"
-              value={newSession.calibCenter}
-              onChange={(e) => setNewSession({ ...newSession, calibCenter: parseFloat(e.target.value) })}
-            />
-            <input
-              type="number"
-              step="0.1"
-              placeholder="Calib Right"
-              value={newSession.calibRight}
-              onChange={(e) => setNewSession({ ...newSession, calibRight: parseFloat(e.target.value) })}
-            />
-            <button type="submit" className="primary-btn">Create Session</button>
-          </div>
-        </form>
-      </div>
+
 
       <div className="sessions-list">
         {sessions.map((session) => {

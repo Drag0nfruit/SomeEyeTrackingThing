@@ -11,7 +11,6 @@ import healthRoutes from './routes/health';
 import sessionRoutes from './routes/sessions';
 import pointsRoutes from './routes/points';
 import exportRoutes from './routes/export';
-import analyticsRoutes from './routes/analytics';
 
 const fastify = Fastify({
   logger: {
@@ -38,7 +37,6 @@ await fastify.register(healthRoutes, { prefix: '/health' });
 await fastify.register(sessionRoutes, { prefix: '/sessions' });
 await fastify.register(pointsRoutes, { prefix: '/sessions' });
 await fastify.register(exportRoutes);
-await fastify.register(analyticsRoutes);
 
 // Graceful shutdown
 const gracefulShutdown = async (signal: string) => {

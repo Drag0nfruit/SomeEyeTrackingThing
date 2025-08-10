@@ -751,12 +751,19 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
 
   const createSession = async () => {
     try {
+      // Use actual calibration data if available, otherwise use defaults
+      const leftCalib = calibrationData.left?.x ?? calibrationPoints.left;
+      const centerCalib = calibrationData.center?.x ?? calibrationPoints.center;
+      const rightCalib = calibrationData.right?.x ?? calibrationPoints.right;
+      
+      console.log('Creating session with calibration data:', { leftCalib, centerCalib, rightCalib });
+      
       const response = await axios.post('http://localhost:3000/sessions', {
         deviceInfo: 'Webcam Eye Tracker',
         samplingRate: 30,
-        calibLeft: calibrationPoints.left,
-        calibCenter: calibrationPoints.center,
-        calibRight: calibrationPoints.right
+        calibLeft: leftCalib,
+        calibCenter: centerCalib,
+        calibRight: rightCalib
       });
 
       const newSessionId = response.data.id;
@@ -769,6 +776,14 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
 
   const startRecording = async () => {
     console.log('Start recording clicked, current session:', currentSessionId);
+    
+    // Check if calibration is complete
+    const isCalibrated = calibrationData.left && calibrationData.center && calibrationData.right;
+    if (!isCalibrated) {
+      console.warn('Starting recording without complete calibration - using default values');
+      alert('WARNING: Starting recording without calibration. For best results, calibrate left, center, and right positions first.');
+    }
+    
     if (!currentSessionId) {
       console.log('No session ID, creating new session...');
       await createSession();
@@ -901,15 +916,17 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
     let samplesCollected = 0;
     
     const samplingInterval = setInterval(() => {
-      // Get current eye position from debug info
+      // Get current eye position from debug info (raw position before calibration)
       const currentEyePos = debugInfo.averageEye;
       
       if (currentEyePos) {
+        // Store the raw eye position (same coordinate system as tracking)
         setCalibrationSamples(prev => ({
           ...prev,
           [position]: [...prev[position], { x: currentEyePos.x, y: currentEyePos.y }]
         }));
         samplesCollected++;
+        console.log(`Calibration sample ${samplesCollected} for ${position}:`, currentEyePos.x);
       }
       
       if (samplesCollected >= sampleDuration / sampleInterval) {
@@ -933,6 +950,9 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
       }));
       
       console.log(`Calibration ${position} completed:`, { x: avgX, y: avgY });
+      console.log(`Samples collected: ${samples.length}, Range: ${Math.min(...samples.map(s => s.x)).toFixed(3)} to ${Math.max(...samples.map(s => s.x)).toFixed(3)}`);
+    } else {
+      console.warn(`No samples collected for ${position} calibration`);
     }
     
     setCalibrationStep(null);
@@ -1101,13 +1121,16 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
                 <div><strong>Calibrating:</strong> {calibrationStep} ({calibrationCountdown})</div>
               )}
               {calibrationData.left && (
-                <div><strong>Calib Left:</strong> X: {calibrationData.left.x.toFixed(3)}, Y: {calibrationData.left.y.toFixed(3)}</div>
+                <div><strong>Calib Left:</strong> X: {calibrationData.left.x.toFixed(3)}, Y: {calibrationData.left.y.toFixed(3)} [DONE]</div>
               )}
               {calibrationData.center && (
-                <div><strong>Calib Center:</strong> X: {calibrationData.center.x.toFixed(3)}, Y: {calibrationData.center.y.toFixed(3)}</div>
+                <div><strong>Calib Center:</strong> X: {calibrationData.center.x.toFixed(3)}, Y: {calibrationData.center.y.toFixed(3)} [DONE]</div>
               )}
               {calibrationData.right && (
-                <div><strong>Calib Right:</strong> X: {calibrationData.right.x.toFixed(3)}, Y: {calibrationData.right.y.toFixed(3)}</div>
+                <div><strong>Calib Right:</strong> X: {calibrationData.right.x.toFixed(3)}, Y: {calibrationData.right.y.toFixed(3)} [DONE]</div>
+              )}
+              {calibrationData.left && calibrationData.center && calibrationData.right && (
+                <div style={{ color: '#28a745', fontWeight: 'bold' }}>Calibration Complete!</div>
               )}
             </div>
           )}
@@ -1266,35 +1289,24 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
               fontWeight: 'bold',
               textAlign: 'center'
             }}>
-              <div>Look at the dot in {calibrationCountdown}...</div>
+              <div>Get ready in {calibrationCountdown}...</div>
             </div>
           ) : (
-            <div className="calibration-dot" style={{
+            <div className="calibration-instruction" style={{
               position: 'absolute',
-              width: '20px',
-              height: '20px',
-              backgroundColor: '#ff6b6b',
-              borderRadius: '50%',
-              border: '3px solid white',
-              boxShadow: '0 0 20px rgba(255, 107, 107, 0.8)',
+              color: 'white',
+              fontSize: '36px',
+              fontWeight: 'bold',
+              textAlign: 'center',
+              textShadow: '2px 2px 4px rgba(0, 0, 0, 0.8)',
               left: calibrationStep === 'left' ? '10%' : calibrationStep === 'right' ? '90%' : '50%',
               top: '50%',
               transform: 'translate(-50%, -50%)',
               animation: 'pulse 1s infinite'
             }}>
-              <div style={{
-                position: 'absolute',
-                top: '30px',
-                left: '50%',
-                transform: 'translateX(-50%)',
-                color: 'white',
-                fontSize: '16px',
-                fontWeight: 'bold',
-                textAlign: 'center',
-                whiteSpace: 'nowrap'
-              }}>
-                Look Here
-              </div>
+              {calibrationStep === 'left' && 'Look to the\nFar Left'}
+              {calibrationStep === 'center' && 'Look Straight\nAhead'}
+              {calibrationStep === 'right' && 'Look to the\nFar Right'}
             </div>
           )}
         </div>
