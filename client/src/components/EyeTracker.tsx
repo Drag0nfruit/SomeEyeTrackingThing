@@ -35,6 +35,25 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
   const [uploadQueue, setUploadQueue] = useState<Point[]>([]);
   const [isCalibrating, setIsCalibrating] = useState(false);
   const [calibrationStep, setCalibrationStep] = useState<'left' | 'center' | 'right' | null>(null);
+  const [calibrationData, setCalibrationData] = useState<{
+    left: { x: number; y: number } | null;
+    center: { x: number; y: number } | null;
+    right: { x: number; y: number } | null;
+  }>({
+    left: null,
+    center: null,
+    right: null
+  });
+  const [calibrationSamples, setCalibrationSamples] = useState<{
+    left: { x: number; y: number }[];
+    center: { x: number; y: number }[];
+    right: { x: number; y: number }[];
+  }>({
+    left: [],
+    center: [],
+    right: []
+  });
+  const [calibrationCountdown, setCalibrationCountdown] = useState<number>(0);
   const [trackingStatus, setTrackingStatus] = useState<string>('Initializing...');
   const [lastRealDataTime, setLastRealDataTime] = useState<number>(0);
   const [debugMode, setDebugMode] = useState<boolean>(false);
@@ -462,151 +481,147 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
           const rightEyeX = validRightEyeLandmarks.reduce((sum, landmark) => sum + landmark.x, 0) / validRightEyeLandmarks.length;
           const rightEyeY = validRightEyeLandmarks.reduce((sum, landmark) => sum + landmark.y, 0) / validRightEyeLandmarks.length;
           
-          // Calculate overall eye position (average of both eyes)
-          const eyeX = (leftEyeX + rightEyeX) / 2;
-          const eyeY = (leftEyeY + rightEyeY) / 2;
+          // Calculate eye position relative to eye socket (head-independent)
+          const leftEyeCornerLeft = landmarks[145]; // Left eye left corner
+          const leftEyeCornerRight = landmarks[158]; // Left eye right corner
+          const rightEyeCornerLeft = landmarks[374]; // Right eye left corner  
+          const rightEyeCornerRight = landmarks[387]; // Right eye right corner
           
-          // Update debug info
-          setDebugInfo({
-            leftEye: { x: leftEyeX, y: leftEyeY },
-            rightEye: { x: rightEyeX, y: rightEyeY },
-            averageEye: { x: eyeX, y: eyeY },
-            faceDetected: true,
-            landmarksCount: landmarks.length
-          });
+          if (leftEyeCornerLeft && leftEyeCornerRight && rightEyeCornerLeft && rightEyeCornerRight) {
+            // Calculate iris position relative to eye socket for left eye
+            const leftEyeWidth = leftEyeCornerRight.x - leftEyeCornerLeft.x;
+            const leftIrisPosition = leftEyeWidth > 0 ? (leftEyeX - leftEyeCornerLeft.x) / leftEyeWidth : 0.5;
+            
+            // Calculate iris position relative to eye socket for right eye
+            const rightEyeWidth = rightEyeCornerRight.x - rightEyeCornerLeft.x;
+            const rightIrisPosition = rightEyeWidth > 0 ? (rightEyeX - rightEyeCornerLeft.x) / rightEyeWidth : 0.5;
+            
+            // Average both eyes for final position
+            const eyeX = (leftIrisPosition + rightIrisPosition) / 2;
+            const eyeY = (leftEyeY + rightEyeY) / 2;
+            
+            // Get calibrated eye position
+            const calibratedEyeX = getCalibratedEyePosition(eyeX);
+            
+            // Update debug info
+            setDebugInfo({
+              leftEye: { x: leftEyeX, y: leftEyeY },
+              rightEye: { x: rightEyeX, y: rightEyeY },
+              averageEye: { x: eyeX, y: eyeY },
+              faceDetected: true,
+              landmarksCount: landmarks.length
+            });
 
-          // Draw debug visualization if landmarks are enabled
-          if (drawLandmarks) {
-            // Draw left eye landmarks
-            canvasCtx.fillStyle = 'rgba(255, 0, 0, 0.8)';
-            validLeftEyeLandmarks.forEach((landmark, index) => {
-              const x = landmark.x * canvasRef.current!.width;
-              const y = landmark.y * canvasRef.current!.height;
+            // Draw debug visualization if landmarks are enabled
+            if (drawLandmarks) {
+              // Draw left eye landmarks
+              canvasCtx.fillStyle = 'rgba(255, 0, 0, 0.8)';
+              validLeftEyeLandmarks.forEach((landmark, index) => {
+                const x = landmark.x * canvasRef.current!.width;
+                const y = landmark.y * canvasRef.current!.height;
+                canvasCtx.beginPath();
+                canvasCtx.arc(x, y, 2, 0, 2 * Math.PI);
+                canvasCtx.fill();
+                canvasCtx.strokeStyle = 'white';
+                canvasCtx.lineWidth = 1;
+                canvasCtx.stroke();
+                
+                // Add label for key landmarks
+                if (index === 0) { // Center
+                  canvasCtx.fillStyle = 'white';
+                  canvasCtx.font = '10px Arial';
+                  canvasCtx.fillText('L', x + 8, y + 3);
+                }
+              });
+              
+              // Draw right eye landmarks
+              canvasCtx.fillStyle = 'rgba(0, 0, 255, 0.8)';
+              validRightEyeLandmarks.forEach((landmark, index) => {
+                const x = landmark.x * canvasRef.current!.width;
+                const y = landmark.y * canvasRef.current!.height;
+                canvasCtx.beginPath();
+                canvasCtx.arc(x, y, 2, 0, 2 * Math.PI);
+                canvasCtx.fill();
+                canvasCtx.strokeStyle = 'white';
+                canvasCtx.lineWidth = 1;
+                canvasCtx.stroke();
+                
+                // Add label for key landmarks
+                if (index === 0) { // Center
+                  canvasCtx.fillStyle = 'white';
+                  canvasCtx.font = '10px Arial';
+                  canvasCtx.fillText('R', x + 8, y + 3);
+                }
+              });
+              
+              // Draw eye centers with smaller dots
+              canvasCtx.fillStyle = 'rgba(0, 255, 0, 0.9)';
+              const leftCenterX = leftEyeX * canvasRef.current!.width;
+              const leftCenterY = leftEyeY * canvasRef.current!.height;
+              const rightCenterX = rightEyeX * canvasRef.current!.width;
+              const rightCenterY = rightEyeY * canvasRef.current!.height;
+              
               canvasCtx.beginPath();
-              canvasCtx.arc(x, y, 3, 0, 2 * Math.PI);
+              canvasCtx.arc(leftCenterX, leftCenterY, 4, 0, 2 * Math.PI);
               canvasCtx.fill();
               canvasCtx.strokeStyle = 'white';
-              canvasCtx.lineWidth = 1;
+              canvasCtx.lineWidth = 2;
               canvasCtx.stroke();
               
-              // Add label for key landmarks
-              if (index === 0) { // Center
-                canvasCtx.fillStyle = 'white';
-                canvasCtx.font = '10px Arial';
-                canvasCtx.fillText('L', x + 8, y + 3);
-              }
-            });
-            
-            // Draw right eye landmarks
-            canvasCtx.fillStyle = 'rgba(0, 0, 255, 0.8)';
-            validRightEyeLandmarks.forEach((landmark, index) => {
-              const x = landmark.x * canvasRef.current!.width;
-              const y = landmark.y * canvasRef.current!.height;
               canvasCtx.beginPath();
-              canvasCtx.arc(x, y, 3, 0, 2 * Math.PI);
+              canvasCtx.arc(rightCenterX, rightCenterY, 4, 0, 2 * Math.PI);
               canvasCtx.fill();
               canvasCtx.strokeStyle = 'white';
-              canvasCtx.lineWidth = 1;
+              canvasCtx.lineWidth = 2;
               canvasCtx.stroke();
+            }
+            
+            // Create data point with calibrated position
+            const point: Point = {
+              ts: Date.now(),
+              x: calibratedEyeX,
+              confidence: 0.8 // You could calculate this based on landmark confidence
+            };
+
+            console.log('Eye position detected:', { raw: eyeX, calibrated: calibratedEyeX }, 'Recording state:', { isRecording: isRecordingRef.current, isPaused: isPausedRef.current });
+
+            // Update live data directly for immediate visualization
+            if (isRecordingRef.current && !isPausedRef.current) {
+              console.log('Recording is active, updating live data with eyeX:', eyeX);
+              setTrackingStatus(`Recording... Eye position: ${eyeX.toFixed(3)}`);
               
-              // Add label for key landmarks
-              if (index === 0) { // Center
-                canvasCtx.fillStyle = 'white';
-                canvasCtx.font = '10px Arial';
-                canvasCtx.fillText('R', x + 8, y + 3);
+              setLiveData(prev => {
+                const now = Date.now();
+                const fifteenSecondsAgo = now - 15000;
+                const filtered = prev.filter(point => point.ts > fifteenSecondsAgo);
+                const newData = [...filtered, point];
+                console.log('Live data updated (RECORDING):', newData.length, 'points, latest eyeX:', point.x);
+                return newData;
+              });
+
+              // Send to worker for processing and upload
+              if (workerRef.current) {
+                workerRef.current.postMessage({
+                  type: 'process',
+                  data: { points: [point] }
+                });
               }
-            });
-            
-            // Draw eye centers with smaller dots
-            canvasCtx.fillStyle = 'rgba(0, 255, 0, 0.9)';
-            const leftCenterX = leftEyeX * canvasRef.current!.width;
-            const leftCenterY = leftEyeY * canvasRef.current!.height;
-            const rightCenterX = rightEyeX * canvasRef.current!.width;
-            const rightCenterY = rightEyeY * canvasRef.current!.height;
-            
-            canvasCtx.beginPath();
-            canvasCtx.arc(leftCenterX, leftCenterY, 6, 0, 2 * Math.PI);
-            canvasCtx.fill();
-            canvasCtx.strokeStyle = 'white';
-            canvasCtx.lineWidth = 2;
-            canvasCtx.stroke();
-            
-            canvasCtx.beginPath();
-            canvasCtx.arc(rightCenterX, rightCenterY, 6, 0, 2 * Math.PI);
-            canvasCtx.fill();
-            canvasCtx.strokeStyle = 'white';
-            canvasCtx.lineWidth = 2;
-            canvasCtx.stroke();
-            
-            // Draw average eye position with smaller dot
-            canvasCtx.fillStyle = 'rgba(255, 255, 0, 0.9)';
-            const avgX = eyeX * canvasRef.current!.width;
-            const avgY = eyeY * canvasRef.current!.height;
-            canvasCtx.beginPath();
-            canvasCtx.arc(avgX, avgY, 8, 0, 2 * Math.PI);
-            canvasCtx.fill();
-            canvasCtx.strokeStyle = 'black';
-            canvasCtx.lineWidth = 2;
-            canvasCtx.stroke();
-            
-            // Draw smaller crosshair at average position
-            canvasCtx.strokeStyle = 'black';
-            canvasCtx.lineWidth = 2;
-            canvasCtx.beginPath();
-            canvasCtx.moveTo(avgX - 12, avgY);
-            canvasCtx.lineTo(avgX + 12, avgY);
-            canvasCtx.moveTo(avgX, avgY - 12);
-            canvasCtx.lineTo(avgX, avgY + 12);
-            canvasCtx.stroke();
-            
-            // Add smaller label for average position
-            canvasCtx.fillStyle = 'black';
-            canvasCtx.font = 'bold 12px Arial';
-            canvasCtx.fillText('AVG', avgX + 12, avgY - 12);
-          }
-          
-          // Create data point
-          const point: Point = {
-            ts: Date.now(),
-            x: eyeX,
-            confidence: 0.8 // You could calculate this based on landmark confidence
-          };
-
-          console.log('Eye position detected:', eyeX, 'Recording state:', { isRecording: isRecordingRef.current, isPaused: isPausedRef.current });
-
-          // Update live data directly for immediate visualization
-          if (isRecordingRef.current && !isPausedRef.current) {
-            console.log('Recording is active, updating live data with eyeX:', eyeX);
-            setTrackingStatus(`Recording... Eye position: ${eyeX.toFixed(3)}`);
-            
-            setLiveData(prev => {
-              const now = Date.now();
-              const fifteenSecondsAgo = now - 15000;
-              const filtered = prev.filter(point => point.ts > fifteenSecondsAgo);
-              const newData = [...filtered, point];
-              console.log('Live data updated (RECORDING):', newData.length, 'points, latest eyeX:', point.x);
-              return newData;
-            });
-
-            // Send to worker for processing and upload
-            if (workerRef.current) {
-              workerRef.current.postMessage({
-                type: 'process',
-                data: { points: [point] }
+              setLastRealDataTime(Date.now()); // Update last real data time
+            } else {
+              console.log('Not recording - isRecording:', isRecordingRef.current, 'isPaused:', isPausedRef.current);
+              // Always update live data for chart visualization, regardless of any button states
+              setLiveData(prev => {
+                const now = Date.now();
+                const fifteenSecondsAgo = now - 15000;
+                const filtered = prev.filter(point => point.ts > fifteenSecondsAgo);
+                const newData = [...filtered, point];
+                console.log('Live data updated (NOT RECORDING):', newData.length, 'points, latest eyeX:', point.x);
+                return newData;
               });
             }
-            setLastRealDataTime(Date.now()); // Update last real data time
           } else {
-            console.log('Not recording - isRecording:', isRecordingRef.current, 'isPaused:', isPausedRef.current);
-            // Always update live data for chart visualization, regardless of any button states
-            setLiveData(prev => {
-              const now = Date.now();
-              const fifteenSecondsAgo = now - 15000;
-              const filtered = prev.filter(point => point.ts > fifteenSecondsAgo);
-              const newData = [...filtered, point];
-              console.log('Live data updated (NOT RECORDING):', newData.length, 'points, latest eyeX:', point.x);
-              return newData;
-            });
+            console.log('Eye corner landmarks not found');
+            setDebugInfo(prev => ({ ...prev, faceDetected: false }));
           }
         } else {
           console.log('Eye landmarks not found:', { validLeftEyeLandmarks, validRightEyeLandmarks });
@@ -721,19 +736,104 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
   const calibrate = (position: 'left' | 'center' | 'right') => {
     setIsCalibrating(true);
     setCalibrationStep(position);
+    setCalibrationCountdown(3);
     
-    // In a real implementation, you'd capture the current eye position
-    // For now, we'll use preset values
-    setTimeout(() => {
-      setCalibrationStep(null);
-      setIsCalibrating(false);
-    }, 2000);
+    // Clear previous samples for this position
+    setCalibrationSamples(prev => ({
+      ...prev,
+      [position]: []
+    }));
+    
+    // Start countdown
+    const countdownInterval = setInterval(() => {
+      setCalibrationCountdown(prev => {
+        if (prev <= 1) {
+          clearInterval(countdownInterval);
+          // Start collecting samples
+          startCalibrationSampling(position);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
   };
 
+  const startCalibrationSampling = (position: 'left' | 'center' | 'right') => {
+    const sampleDuration = 2000; // 2 seconds of sampling
+    const sampleInterval = 100; // Sample every 100ms
+    let samplesCollected = 0;
+    
+    const samplingInterval = setInterval(() => {
+      // Get current eye position from debug info
+      const currentEyePos = debugInfo.averageEye;
+      
+      if (currentEyePos) {
+        setCalibrationSamples(prev => ({
+          ...prev,
+          [position]: [...prev[position], { x: currentEyePos.x, y: currentEyePos.y }]
+        }));
+        samplesCollected++;
+      }
+      
+      if (samplesCollected >= sampleDuration / sampleInterval) {
+        clearInterval(samplingInterval);
+        finishCalibration(position);
+      }
+    }, sampleInterval);
+  };
+
+  const finishCalibration = (position: 'left' | 'center' | 'right') => {
+    const samples = calibrationSamples[position];
+    
+    if (samples.length > 0) {
+      // Calculate average position from samples
+      const avgX = samples.reduce((sum, sample) => sum + sample.x, 0) / samples.length;
+      const avgY = samples.reduce((sum, sample) => sum + sample.y, 0) / samples.length;
+      
+      setCalibrationData(prev => ({
+        ...prev,
+        [position]: { x: avgX, y: avgY }
+      }));
+      
+      console.log(`Calibration ${position} completed:`, { x: avgX, y: avgY });
+    }
+    
+    setCalibrationStep(null);
+    setIsCalibrating(false);
+  };
+
+  const getCalibratedEyePosition = (rawX: number): number => {
+    const { left, center, right } = calibrationData;
+    
+    // If we don't have all calibration points, return raw position
+    if (!left || !center || !right) {
+      return rawX;
+    }
+    
+    // Map raw eye position to -1 to +1 scale
+    if (rawX <= center.x) {
+      // Map from left to center (rawX: left.x -> center.x, output: -1 -> 0)
+      const range = center.x - left.x;
+      const position = rawX - left.x;
+      return -1 + (position / range);
+    } else {
+      // Map from center to right (rawX: center.x -> right.x, output: 0 -> +1)
+      const range = right.x - center.x;
+      const position = rawX - center.x;
+      return position / range;
+    }
+  };
 
 
   return (
     <div className="eye-tracker">
+      <style>{`
+        @keyframes pulse {
+          0% { transform: translate(-50%, -50%) scale(1); }
+          50% { transform: translate(-50%, -50%) scale(1.2); }
+          100% { transform: translate(-50%, -50%) scale(1); }
+        }
+      `}</style>
       <div className="video-container">
         <video
           ref={videoRef}
@@ -853,6 +953,18 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
               )}
               {debugInfo.averageEye && (
                 <div><strong>Average Eye:</strong> X: {debugInfo.averageEye.x.toFixed(3)}, Y: {debugInfo.averageEye.y.toFixed(3)}</div>
+              )}
+              {isCalibrating && (
+                <div><strong>Calibrating:</strong> {calibrationStep} ({calibrationCountdown})</div>
+              )}
+              {calibrationData.left && (
+                <div><strong>Calib Left:</strong> X: {calibrationData.left.x.toFixed(3)}, Y: {calibrationData.left.y.toFixed(3)}</div>
+              )}
+              {calibrationData.center && (
+                <div><strong>Calib Center:</strong> X: {calibrationData.center.x.toFixed(3)}, Y: {calibrationData.center.y.toFixed(3)}</div>
+              )}
+              {calibrationData.right && (
+                <div><strong>Calib Right:</strong> X: {calibrationData.right.x.toFixed(3)}, Y: {calibrationData.right.y.toFixed(3)}</div>
               )}
             </div>
           )}
@@ -975,7 +1087,7 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
                 });
               }}
             />
-            <YAxis domain={[0, 1]} />
+            <YAxis domain={[-1, 1]} />
             <Tooltip 
               labelFormatter={(value) => {
                 const date = new Date(value);
@@ -1014,10 +1126,56 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
       </div>
 
       {isCalibrating && (
-        <div className="calibration-overlay">
-          <div className="calibration-message">
-            Look at the {calibrationStep} position...
-          </div>
+        <div className="calibration-overlay" style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          backgroundColor: 'rgba(0, 0, 0, 0.7)',
+          zIndex: 1000,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center'
+        }}>
+          {calibrationCountdown > 0 ? (
+            <div className="calibration-countdown" style={{
+              color: 'white',
+              fontSize: '48px',
+              fontWeight: 'bold',
+              textAlign: 'center'
+            }}>
+              <div>Look at the dot in {calibrationCountdown}...</div>
+            </div>
+          ) : (
+            <div className="calibration-dot" style={{
+              position: 'absolute',
+              width: '20px',
+              height: '20px',
+              backgroundColor: '#ff6b6b',
+              borderRadius: '50%',
+              border: '3px solid white',
+              boxShadow: '0 0 20px rgba(255, 107, 107, 0.8)',
+              left: calibrationStep === 'left' ? '10%' : calibrationStep === 'right' ? '90%' : '50%',
+              top: '50%',
+              transform: 'translate(-50%, -50%)',
+              animation: 'pulse 1s infinite'
+            }}>
+              <div style={{
+                position: 'absolute',
+                top: '30px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                color: 'white',
+                fontSize: '16px',
+                fontWeight: 'bold',
+                textAlign: 'center',
+                whiteSpace: 'nowrap'
+              }}>
+                Look Here
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
