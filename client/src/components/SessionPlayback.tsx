@@ -215,8 +215,12 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
     setZoomDomain(null);
   };
 
-  const formatTime = (timestamp: number) => {
-    const date = new Date(timestamp);
+  const formatTime = (timestamp: number | string) => {
+    const numTimestamp = typeof timestamp === 'string' ? parseInt(timestamp) : timestamp;
+    const date = new Date(numTimestamp);
+    if (isNaN(date.getTime())) {
+      return 'Invalid Date';
+    }
     return date.toLocaleTimeString('en-US', { 
       hour12: false, 
       hour: '2-digit', 
@@ -272,37 +276,38 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
     if (points.length === 0) return null;
 
     const velocities: number[] = [];
-    const frequencies: number[] = [];
+    const movements: number[] = [];
     
-    // Calculate velocities
+    // Calculate velocities and movements
     for (let i = 1; i < points.length; i++) {
       const dt = parseInt(points[i].ts) - parseInt(points[i - 1].ts);
       const dx = points[i].x - points[i - 1].x;
       if (dt > 0) {
         velocities.push(Math.abs(dx / dt));
+        movements.push(Math.abs(dx));
       }
     }
 
-    // Calculate frequencies (saccades per second)
-    const saccadeThreshold = 0.05; // threshold for saccade detection
-    let saccadeCount = 0;
+    // Calculate movement frequency (significant movements per second)
+    const movementThreshold = 0.1; // threshold for significant movement
+    let movementCount = 0;
     for (let i = 1; i < points.length; i++) {
       const dx = Math.abs(points[i].x - points[i - 1].x);
-      if (dx > saccadeThreshold) {
-        saccadeCount++;
+      if (dx > movementThreshold) {
+        movementCount++;
       }
     }
 
     const totalTime = (parseInt(points[points.length - 1].ts) - parseInt(points[0].ts)) / 1000;
-    const frequency = totalTime > 0 ? saccadeCount / totalTime : 0;
+    const movementFrequency = totalTime > 0 ? movementCount / totalTime : 0;
 
     return {
       totalPoints: points.length,
       duration: totalTime,
       avgVelocity: velocities.length > 0 ? velocities.reduce((a, b) => a + b, 0) / velocities.length : 0,
       maxVelocity: velocities.length > 0 ? Math.max(...velocities) : 0,
-      saccadeFrequency: frequency,
-      avgConfidence: points.reduce((sum, p) => sum + (p.confidence || 0), 0) / points.length
+      avgMovement: movements.length > 0 ? movements.reduce((a, b) => a + b, 0) / movements.length : 0,
+      movementFrequency: movementFrequency
     };
   };
 
@@ -426,7 +431,7 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
               domain={zoomDomain ? [zoomDomain.left, zoomDomain.right] : ['dataMin', 'dataMax']}
               tickFormatter={(value) => formatTime(value)}
             />
-            <YAxis domain={[0, 1]} />
+            <YAxis domain={[0, 1]} tickFormatter={(value) => value.toFixed(2)} />
             <Tooltip 
               labelFormatter={(value) => formatTime(value)}
               formatter={(value: any) => [value, 'Eye Position']}
@@ -434,7 +439,7 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
             <Line 
               type="monotone" 
               dataKey="x" 
-              stroke="#8884d8" 
+              stroke="#ff6b35" 
               strokeWidth={2}
               dot={false}
             />
@@ -449,9 +454,9 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
               <ReferenceLine
                 x1={Math.min(zoomStart, zoomEnd)}
                 x2={Math.max(zoomStart, zoomEnd)}
-                stroke="#8884d8"
+                stroke="#ff6b35"
                 strokeOpacity={0.3}
-                fill="#8884d8"
+                fill="#ff6b35"
                 fillOpacity={0.3}
               />
             )}
@@ -473,19 +478,19 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
             </div>
             <div className="stat-item">
               <label>Avg Velocity:</label>
-              <span>{(stats.avgVelocity * 1000).toFixed(2)} px/s</span>
+              <span>{(stats.avgVelocity * 1000).toFixed(2)} units/s</span>
             </div>
             <div className="stat-item">
               <label>Max Velocity:</label>
-              <span>{(stats.maxVelocity * 1000).toFixed(2)} px/s</span>
+              <span>{(stats.maxVelocity * 1000).toFixed(2)} units/s</span>
             </div>
             <div className="stat-item">
-              <label>Saccade Frequency:</label>
-              <span>{stats.saccadeFrequency.toFixed(2)} saccades/s</span>
+              <label>Movement Frequency:</label>
+              <span>{stats.movementFrequency.toFixed(2)} movements/s</span>
             </div>
             <div className="stat-item">
-              <label>Avg Confidence:</label>
-              <span>{(stats.avgConfidence * 100).toFixed(1)}%</span>
+              <label>Avg Movement:</label>
+              <span>{stats.avgMovement.toFixed(3)} units</span>
             </div>
           </div>
         </div>

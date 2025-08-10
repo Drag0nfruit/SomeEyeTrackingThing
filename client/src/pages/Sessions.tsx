@@ -76,18 +76,6 @@ const Sessions: React.FC = () => {
     }
   }
 
-  const cleanupEmptySessions = async () => {
-    try {
-      const emptySessions = sessions.filter(s => (s._count?.samples || 0) === 0)
-      for (const session of emptySessions) {
-        await deleteSession(session.id)
-      }
-      console.log(`Cleaned up ${emptySessions.length} empty sessions`)
-    } catch (error) {
-      console.error('Failed to cleanup empty sessions:', error)
-    }
-  }
-
   if (loading) {
     return (
       <div className="loading">
@@ -101,15 +89,6 @@ const Sessions: React.FC = () => {
       <div className="page-header">
         <h1>Sessions</h1>
         <p>Browse and analyze previously recorded sessions</p>
-      </div>
-      
-      <div className="sessions-controls">
-        <button onClick={cleanupEmptySessions} className="danger-btn">
-          Cleanup Empty Sessions
-        </button>
-        <span className="empty-count">
-          {sessions.filter(s => (s._count?.samples || 0) === 0).length} empty sessions
-        </span>
       </div>
       
       <div className="create-session-form">
@@ -162,14 +141,12 @@ const Sessions: React.FC = () => {
               <div className="session-header">
                 <h4>Session {session.id.slice(0, 8)}...</h4>
                 <div className="session-actions">
-                  {isEmpty && (
-                    <button 
-                      onClick={() => deleteSession(session.id)}
-                      className="danger-btn small"
-                    >
-                      Delete
-                    </button>
-                  )}
+                  <button 
+                    onClick={() => deleteSession(session.id)}
+                    className="danger-btn small"
+                  >
+                    Delete
+                  </button>
                   <Link to={`/sessions/${session.id}`}>
                     <button className="secondary-btn">View Session</button>
                   </Link>
