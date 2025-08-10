@@ -1,0 +1,34 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  createdAt    DateTime @default(now())
+  deviceInfo   String?
+  samplingRate Int
+  calibLeft    Float
+  calibCenter  Float
+  calibRight   Float
+  samples      Sample[]
+}
+
+model Sample {
+  id         String   @id @default(cuid())
+  sessionId  String
+  ts         BigInt
+  xRaw       Float
+  xFiltered  Float?
+  confidence Float?
+  Session    Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  
+  @@index([sessionId, ts])
+} 

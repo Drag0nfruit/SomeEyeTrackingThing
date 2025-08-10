@@ -1,0 +1,55 @@
+Assessment / Evaluation License (Non-Commercial) v1.0
+Copyright (c) 2025 Yuji Xing. All rights reserved.
+
+1) Definitions
+“Software” means the source code and related materials in this repository.
+“Author” means the copyright holder listed above.
+“Recipient” means any person or entity that accesses the Software.
+
+2) Limited License Grant (Evaluation Only)
+Subject to the terms below, the Author grants Recipient a limited, non-exclusive,
+non-transferable, non-sublicensable, revocable, royalty-free license to:
+  • view, clone, build, run, and modify the Software solely for the purpose of
+    evaluating the Author’s skills in connection with a hiring process (the
+    “Evaluation Purpose”).
+  • create temporary internal copies and modifications only as needed for the
+    Evaluation Purpose.
+
+3) Restrictions
+Except as expressly permitted in Section 2, Recipient SHALL NOT:
+  • use the Software for any commercial, production, or revenue-generating purpose;
+  • distribute, publish, host, or provide the Software or any derivative works to
+    third parties;
+  • incorporate any part of the Software into products, services, models, training
+    data, or internal systems beyond the Evaluation Purpose;
+  • remove or alter copyright or license notices in any copy;
+  • sublicense the Software or grant others any rights to it.
+
+4) Ownership
+The Software is licensed, not sold. The Author retains all right, title, and interest,
+including all intellectual property rights. No patent rights are granted under this license.
+
+5) Feedback
+If Recipient provides feedback or suggestions, the Author may use them without
+restriction and without obligation to Recipient.
+
+6) Term and Termination
+This license is effective upon Recipient’s access to the Software and automatically
+terminates upon completion of the Evaluation Purpose or any breach of this license.
+Upon termination, Recipient must cease all use and delete all copies and derivatives
+(excluding routine backups that will be overwritten in due course).
+
+7) Warranty Disclaimer
+THE SOFTWARE IS PROVIDED “AS IS” WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING WITHOUT LIMITATION ANY WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT.
+
+8) Limitation of Liability
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL THE AUTHOR BE LIABLE
+FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE
+DAMAGES, OR ANY LOSS OF PROFITS, REVENUE, DATA, OR GOODWILL, ARISING OUT OF OR
+RELATING TO THIS SOFTWARE OR THIS LICENSE, EVEN IF ADVISED OF THE POSSIBILITY.
+
+9) Other Uses
+Any use not expressly permitted by this license requires the Author’s prior written
+permission.

@@ -1,0 +1,35 @@
+{
+  "name": "some-eye-tracking-thing",
+  "version": "1.0.0",
+  "description": "Eye tracking application for assessment and evaluation purposes",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev",
+    "build": "npm run build:server && npm run build:client",
+    "build:server": "cd server && npm run build",
+    "build:client": "cd client && npm run build",
+    "start": "cd server && npm start",
+    "install:all": "npm install && cd server && npm install && cd ../client && npm install",
+    "db:generate": "cd server && npx prisma generate",
+    "db:migrate": "cd server && npx prisma migrate dev",
+    "db:studio": "cd server && npx prisma studio",
+    "db:reset": "cd server && npx prisma migrate reset"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "prisma": "^6.13.0"
+  },
+  "keywords": [
+    "eye-tracking",
+    "assessment",
+    "evaluation",
+    "research"
+  ],
+  "author": "SomeEyeTrackingThing",
+  "license": "SEE LICENSE IN LICENSE",
+  "dependencies": {
+    "@prisma/client": "^6.13.0"
+  }
+}
