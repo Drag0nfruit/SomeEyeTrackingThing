@@ -3,6 +3,7 @@
 
 generator client {
   provider = "prisma-client-js"
+  output   = "../server/node_modules/.prisma/client"
 }
 
 datasource db {
@@ -30,5 +31,6 @@ model Sample {
   confidence Float?
   Session    Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   
+  @@unique([sessionId, ts])
   @@index([sessionId, ts])
 } 

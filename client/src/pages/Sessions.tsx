@@ -45,10 +45,18 @@ const Sessions: React.FC = () => {
 
   const deleteSession = async (sessionId: string) => {
     try {
-      await fetch(`http://localhost:3000/sessions/${sessionId}`, {
+      const response = await fetch(`http://localhost:3000/sessions/${sessionId}`, {
         method: 'DELETE',
       })
-      setSessions(sessions.filter(s => s.id !== sessionId))
+      
+      if (response.ok) {
+        // Only remove from UI if deletion was successful
+        setSessions(sessions.filter(s => s.id !== sessionId))
+      } else {
+        // Handle error response
+        const errorData = await response.json()
+        console.error('Failed to delete session:', errorData.error)
+      }
     } catch (error) {
       console.error('Failed to delete session:', error)
     }

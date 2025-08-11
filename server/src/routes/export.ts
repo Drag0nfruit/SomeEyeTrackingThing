@@ -1,7 +1,5 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { PrismaClient } from '../../../node_modules/@prisma/client';
-
-const prisma = new PrismaClient();
+import { prisma } from '../prisma';
 
 interface SessionParams {
   id: string;
@@ -74,7 +72,7 @@ export default async function exportRoutes(fastify: FastifyInstance) {
           calibRight: session.calibRight
         },
         samples: samples.map((sample: any) => ({
-          ts: sample.ts.toString(), // Convert BigInt to string
+          ts: Number(sample.ts), // Convert BigInt to number for UI
           xRaw: sample.xRaw,
           xFiltered: sample.xFiltered,
           confidence: sample.confidence

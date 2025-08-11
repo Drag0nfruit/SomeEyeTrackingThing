@@ -1,7 +1,5 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { PrismaClient } from '../../../node_modules/@prisma/client';
-
-const prisma = new PrismaClient();
+import { prisma } from '../prisma';
 
 
 
@@ -32,6 +30,16 @@ export default async function sessionRoutes(fastify: FastifyInstance) {
         return reply.status(400).send({ error: 'calibLeft, calibCenter, and calibRight must be numbers' });
       }
       
+      // Validate calibration values are within -1 to +1 range
+      if (calibLeft < -1 || calibLeft > 1 || calibCenter < -1 || calibCenter > 1 || calibRight < -1 || calibRight > 1) {
+        return reply.status(422).send({ error: 'Calibration values must be between -1 and +1' });
+      }
+      
+      // Validate calibration order: left < center < right
+      if (calibLeft >= calibCenter || calibCenter >= calibRight) {
+        return reply.status(422).send({ error: 'Calibration values must be in order: left < center < right' });
+      }
+      
       const session = await prisma.session.create({
         data: {
           deviceInfo: deviceInfo || 'Unknown Device',
@@ -43,7 +51,7 @@ export default async function sessionRoutes(fastify: FastifyInstance) {
       });
       
       fastify.log.info(`Created new session: ${session.id}`);
-      return reply.status(201).send(session);
+      return reply.status(201).send({ id: session.id });
     } catch (error) {
       fastify.log.error(error);
       return reply.status(500).send({ error: 'Failed to create session' });
@@ -51,14 +59,17 @@ export default async function sessionRoutes(fastify: FastifyInstance) {
   });
 
   // GET /sessions/:id - Get a specific session
-  fastify.get<{ Params: SessionParams }>('/:id', async (request: FastifyRequest<{ Params: SessionParams }>, reply: FastifyReply) => {
+  fastify.get<{ Params: SessionParams; Querystring: { includeSamples?: string } }>('/:id', async (request: FastifyRequest<{ Params: SessionParams; Querystring: { includeSamples?: string } }>, reply: FastifyReply) => {
     try {
       const { id } = request.params;
+      const { includeSamples } = request.query;
+      
+      const includeSamplesBool = includeSamples === '1' || includeSamples === 'true';
       
       const session = await prisma.session.findUnique({
         where: { id },
         include: {
-          samples: {
+          samples: includeSamplesBool ? {
             select: {
               id: true,
               ts: true,
@@ -66,7 +77,7 @@ export default async function sessionRoutes(fastify: FastifyInstance) {
               xFiltered: true,
               confidence: true
             }
-          }
+          } : false
         }
       });
       
@@ -74,13 +85,13 @@ export default async function sessionRoutes(fastify: FastifyInstance) {
         return reply.status(404).send({ error: 'Session not found' });
       }
       
-      // Convert BigInt timestamps to strings to avoid serialization issues
+      // Convert BigInt timestamps to numbers for UI compatibility, this will break if not converted
       const serializedSession = {
         ...session,
-        samples: session.samples.map(sample => ({
+        samples: includeSamplesBool ? session.samples.map((sample: any) => ({
           ...sample,
-          ts: sample.ts.toString() // Convert BigInt to string
-        }))
+          ts: Number(sample.ts) // Convert BigInt to number for UI
+        })) : undefined
       };
       
       return reply.send(serializedSession);
@@ -109,37 +120,26 @@ export default async function sessionRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // DELETE /sessions/:id - Delete a session (only if it has no samples)
+  // DELETE /sessions/:id - Delete a session and all its samples
   fastify.delete<{ Params: SessionParams }>('/:id', async (request: FastifyRequest<{ Params: SessionParams }>, reply: FastifyReply) => {
     try {
       const { id } = request.params;
       
-      // Check if session exists and get sample count
+      // Check if session exists
       const session = await prisma.session.findUnique({
-        where: { id },
-        include: {
-          _count: {
-            select: { samples: true }
-          }
-        }
+        where: { id }
       });
       
       if (!session) {
         return reply.status(404).send({ error: 'Session not found' });
       }
       
-      // Only allow deletion if session has no samples
-      if (session._count.samples > 0) {
-        return reply.status(400).send({ 
-          error: 'Cannot delete session with data. Session has samples that need to be preserved.' 
-        });
-      }
-      
-      // Delete the session
+      // Delete the session (samples will be automatically deleted due to CASCADE)
       await prisma.session.delete({
         where: { id }
       });
       
+      fastify.log.info(`Deleted session ${id} and all its samples`);
       return reply.status(200).send({ 
         message: 'Session deleted successfully',
         sessionId: id

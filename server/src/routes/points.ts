@@ -1,7 +1,6 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { PrismaClient } from '../../../node_modules/@prisma/client';
-
-const prisma = new PrismaClient();
+import { prisma } from '../prisma';
+import { processAligned, ProcessedPoint } from '../signal/processor';
 
 interface SessionParams {
   id: string;

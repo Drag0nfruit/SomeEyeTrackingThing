@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, ReferenceArea } from 'recharts';
 import axios from 'axios';
 
 interface Point {
-  ts: string;
+  ts: number;
   x: number;
   confidence?: number;
 }
@@ -32,13 +32,11 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
-  const [duration, setDuration] = useState(0);
   const [zoomDomain, setZoomDomain] = useState<{ left: string; right: string } | null>(null);
   const [isZooming, setIsZooming] = useState(false);
   const [zoomStart, setZoomStart] = useState<number | null>(null);
   const [zoomEnd, setZoomEnd] = useState<number | null>(null);
   
-  const playbackIntervalRef = useRef<number | null>(null);
   const chartRef = useRef<any>(null);
   const chartContainerRef = useRef<HTMLDivElement>(null);
 
@@ -48,45 +46,27 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
 
   useEffect(() => {
     if (points.length > 0) {
-      const startTime = parseInt(points[0].ts);
-      const endTime = parseInt(points[points.length - 1].ts);
-      setDuration(endTime - startTime);
+      const startTime = points[0].ts;
       setCurrentTime(startTime);
     }
   }, [points]);
 
   useEffect(() => {
-    if (isPlaying && duration > 0) {
-      playbackIntervalRef.current = window.setInterval(() => {
-        setCurrentTime(prev => {
-          const startTime = parseInt(points[0].ts);
-          const endTime = parseInt(points[points.length - 1].ts);
-          const actualDuration = endTime - startTime;
-          
-          // Calculate the time increment based on actual duration and playback speed
-          const timeIncrement = (actualDuration / 100) * playbackSpeed; // 100ms intervals
-          const newTime = prev + timeIncrement;
-          
-          if (newTime >= endTime) {
-            setIsPlaying(false);
-            return endTime;
-          }
-          return newTime;
-        });
-      }, 100); // Update every 100ms for smooth playback
-    } else {
-      if (playbackIntervalRef.current) {
-        clearInterval(playbackIntervalRef.current);
-        playbackIntervalRef.current = null;
-      }
-    }
-
-    return () => {
-      if (playbackIntervalRef.current) {
-        clearInterval(playbackIntervalRef.current);
-      }
-    };
-  }, [isPlaying, playbackSpeed, duration, points]);
+    if (!isPlaying || points.length === 0) return;
+    
+    const endTime = points[points.length - 1].ts;
+    const STEP_MS = 100;
+    
+    const id = window.setInterval(() => {
+      setCurrentTime(t => {
+        const nt = Math.min(t + STEP_MS * playbackSpeed, endTime);
+        if (nt >= endTime) setIsPlaying(false);
+        return nt;
+      });
+    }, STEP_MS);
+    
+    return () => clearInterval(id);
+  }, [isPlaying, playbackSpeed, points]);
 
   const loadSessionData = async () => {
     try {
@@ -116,7 +96,12 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
         console.log('Using new format, points count:', pointsData.length);
       }
       
-      setPoints(pointsData);
+      // Normalize timestamps to numbers and sort by timestamp
+      const normalized: Point[] = (pointsData || [])
+        .map((p: any) => ({ ts: Number(p.ts), x: Number(p.x), confidence: p.confidence }))
+        .sort((a: Point, b: Point) => a.ts - b.ts);
+      
+      setPoints(normalized);
       console.log('Session data loaded successfully');
       
     } catch (err: any) {
@@ -162,12 +147,12 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
 
   const stopPlayback = () => {
     setIsPlaying(false);
-    setCurrentTime(parseInt(points[0].ts));
+    setCurrentTime(points[0].ts);
   };
 
   const resetPlayback = () => {
     setIsPlaying(false);
-    setCurrentTime(parseInt(points[0].ts));
+    setCurrentTime(points[0].ts);
   };
 
   const seekToTime = (time: number) => {
@@ -176,8 +161,8 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
 
   const handleScrubberChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = parseInt(e.target.value);
-    const startTime = parseInt(points[0].ts);
-    const endTime = parseInt(points[points.length - 1].ts);
+    const startTime = points[0].ts;
+    const endTime = points[points.length - 1].ts;
     const seekTime = startTime + (value / 100) * (endTime - startTime);
     seekToTime(seekTime);
   };
@@ -231,8 +216,8 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
 
   const getCurrentScrubberValue = () => {
     if (points.length === 0) return 0;
-    const startTime = parseInt(points[0].ts);
-    const endTime = parseInt(points[points.length - 1].ts);
+    const startTime = points[0].ts;
+    const endTime = points[points.length - 1].ts;
     return ((currentTime - startTime) / (endTime - startTime)) * 100;
   };
 
@@ -241,10 +226,10 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
     
     // Find the closest point to current time
     let closestIndex = 0;
-    let minDiff = Math.abs(parseInt(points[0].ts) - currentTime);
+    let minDiff = Math.abs(points[0].ts - currentTime);
     
     for (let i = 0; i < points.length; i++) {
-      const diff = Math.abs(parseInt(points[i].ts) - currentTime);
+      const diff = Math.abs(points[i].ts - currentTime);
       if (diff < minDiff) {
         minDiff = diff;
         closestIndex = i;
@@ -259,10 +244,10 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
     
     // Find the closest point to current time
     let closestPoint = points[0];
-    let minDiff = Math.abs(parseInt(points[0].ts) - currentTime);
+    let minDiff = Math.abs(points[0].ts - currentTime);
     
     for (const point of points) {
-      const diff = Math.abs(parseInt(point.ts) - currentTime);
+      const diff = Math.abs(point.ts - currentTime);
       if (diff < minDiff) {
         minDiff = diff;
         closestPoint = point;
@@ -280,7 +265,7 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
     
     // Calculate velocities and movements
     for (let i = 1; i < points.length; i++) {
-      const dt = parseInt(points[i].ts) - parseInt(points[i - 1].ts);
+      const dt = points[i].ts - points[i - 1].ts;
       const dx = points[i].x - points[i - 1].x;
       if (dt > 0) {
         velocities.push(Math.abs(dx / dt));
@@ -298,7 +283,7 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
       }
     }
 
-    const totalTime = (parseInt(points[points.length - 1].ts) - parseInt(points[0].ts)) / 1000;
+    const totalTime = (points[points.length - 1].ts - points[0].ts) / 1000;
     const movementFrequency = totalTime > 0 ? movementCount / totalTime : 0;
 
     return {
@@ -389,7 +374,7 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
         <div className="time-display">
           <span>{formatTime(currentTime)}</span>
           <span> / </span>
-          <span>{formatTime(parseInt(points[points.length - 1].ts))}</span>
+          <span>{formatTime(points[points.length - 1].ts)}</span>
         </div>
       </div>
 
@@ -431,7 +416,8 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
               domain={zoomDomain ? [zoomDomain.left, zoomDomain.right] : ['dataMin', 'dataMax']}
               tickFormatter={(value) => formatTime(value)}
             />
-            <YAxis domain={[0, 1]} tickFormatter={(value) => value.toFixed(2)} />
+            <YAxis domain={[-1, 1]} tickFormatter={(value) => value.toFixed(2)} />
+            <ReferenceLine y={0} stroke="#999" strokeDasharray="4 4" />
             <Tooltip 
               labelFormatter={(value) => formatTime(value)}
               formatter={(value: any) => [value, 'Eye Position']}
@@ -451,13 +437,13 @@ const SessionPlayback: React.FC<SessionPlaybackProps> = ({ sessionId }) => {
               strokeDasharray="5 5"
             />
             {isZooming && zoomStart !== null && zoomEnd !== null && (
-              <ReferenceLine
+              <ReferenceArea
                 x1={Math.min(zoomStart, zoomEnd)}
                 x2={Math.max(zoomStart, zoomEnd)}
                 stroke="#ff6b35"
-                strokeOpacity={0.3}
+                strokeOpacity={0.4}
                 fill="#ff6b35"
-                fillOpacity={0.3}
+                fillOpacity={0.15}
               />
             )}
           </LineChart>

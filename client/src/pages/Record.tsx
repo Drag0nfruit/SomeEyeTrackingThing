@@ -4,10 +4,16 @@ import EyeTracker from '../components/EyeTracker'
 
 const Record: React.FC = () => {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [sessionSaved, setSessionSaved] = useState(false);
   const navigate = useNavigate();
 
   const handleSessionCreated = (sessionId: string) => {
     setCurrentSessionId(sessionId);
+    setSessionSaved(false); // Reset saved status when new session starts
+  };
+
+  const handleSessionSaved = (sessionId: string, totalPoints: number) => {
+    setSessionSaved(true);
   };
 
   const handleViewSession = () => {
@@ -24,12 +30,12 @@ const Record: React.FC = () => {
       </div>
 
       <div className="recorder-section">
-        <EyeTracker onSessionCreated={handleSessionCreated} />
+        <EyeTracker onSessionCreated={handleSessionCreated} onSessionSaved={handleSessionSaved} />
       </div>
 
-      {currentSessionId && (
+      {currentSessionId && sessionSaved && (
         <div className="session-created">
-          <h3>Session Created Successfully</h3>
+          <h3>Session Saved Successfully</h3>
           <p>Your recording session has been saved. You can now view and analyze it.</p>
           <button onClick={handleViewSession} className="primary-btn">
             View Session

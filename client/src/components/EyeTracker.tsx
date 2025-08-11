@@ -1,19 +1,14 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { Camera } from '@mediapipe/camera_utils';
 import { FaceMesh } from '@mediapipe/face_mesh';
-import { drawConnectors } from '@mediapipe/drawing_utils';
+
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import type { TooltipProps } from 'recharts';
 import type { ValueType, NameType } from 'recharts/types/component/DefaultTooltipContent';
 import axios from 'axios';
 
 // ---- MediaPipe FaceMesh indices (refineLandmarks: true) ----
-const LEFT_IRIS = [468, 469, 470, 471, 472];   // 472 ≈ center
-const RIGHT_IRIS = [473, 474, 475, 476, 477];  // 477 ≈ center
-const LEFT_EYE_INNER  = 263; // subject's left (nasal)
-const LEFT_EYE_OUTER  = 362; // subject's left (temporal)
-const RIGHT_EYE_INNER = 133; // subject's right (nasal)
-const RIGHT_EYE_OUTER = 33;  // subject's right (temporal)
+
 
 const SingleValueTooltip: React.FC<TooltipProps<ValueType, NameType>> = ({ active, label, payload }) => {
   if (!active || !payload || payload.length === 0) return null;
@@ -65,9 +60,10 @@ interface Point {
 interface EyeTrackerProps {
   sessionId?: string;
   onSessionCreated?: (sessionId: string) => void;
+  onSessionSaved?: (sessionId: string, totalPoints: number) => void;
 }
 
-const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) => {
+const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated, onSessionSaved }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cameraRef = useRef<Camera | null>(null);
@@ -77,7 +73,7 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(sessionId || null);
-  const [calibrationPoints, setCalibrationPoints] = useState<{ left: number; center: number; right: number }>({
+  const [calibrationPoints] = useState<{ left: number; center: number; right: number }>({
     left: 0.1,
     center: 0.5,
     right: 0.9
@@ -266,7 +262,7 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
             console.log('Loading MediaPipe file:', file);
             // Try primary CDN first, fallback to alternative
             const primaryUrl = `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
-            const fallbackUrl = `https://unpkg.com/@mediapipe/face_mesh/${file}`;
+
             
             // For WASM files, we'll use the primary CDN
             if (file.endsWith('.wasm') || file.endsWith('.wasm.bin')) {
@@ -859,8 +855,8 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated }) 
           } else {
             console.log('Session saved successfully with', totalPoints, 'points');
             setTrackingStatus(`Session saved successfully with ${totalPoints} points`);
-            // Show success notification
-            alert(`Recording saved successfully! Session contains ${totalPoints} data points.`);
+            // Call the session saved callback
+            onSessionSaved?.(currentSessionId, totalPoints);
           }
         } catch (error) {
           console.error('Failed to check session stats:', error);
