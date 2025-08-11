@@ -106,6 +106,8 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated, on
   const [debugMode, setDebugMode] = useState<boolean>(false);
   const [showLandmarks, setShowLandmarks] = useState<boolean>(true);
   const [isInitializing, setIsInitializing] = useState<boolean>(true);
+  const [cameraPermissionDenied, setCameraPermissionDenied] = useState<boolean>(false);
+  const [permissionState, setPermissionState] = useState<'unknown' | 'granted' | 'denied' | 'prompt'>('unknown');
   const [sessionStats, setSessionStats] = useState<{
     totalPoints: number;
     duration: number;
@@ -239,87 +241,38 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated, on
     return () => clearInterval(updateInterval);
   }, [isRecording, isPaused, lastRealDataTime]);
 
-  // Initialize MediaPipe Face Mesh
+  // Initialize MediaPipe Face Mesh with permission checking
   useEffect(() => {
     if (!videoRef.current || !canvasRef.current) return;
 
-    const initializeFaceMesh = async () => {
+    const initializeWithPermissionCheck = async () => {
       try {
-        console.log('Initializing MediaPipe Face Mesh...');
+        console.log('Checking camera permission...');
+        const permission = await checkCameraPermission();
+        setPermissionState(permission);
         
-        // Clean up any existing instances
-        if (faceMeshRef.current) {
-          faceMeshRef.current.close();
-          faceMeshRef.current = null;
+        if (permission === 'granted') {
+          // Permission already granted, initialize camera
+          await initializeCamera();
+        } else if (permission === 'denied') {
+          // Permission denied, show warning
+          setCameraPermissionDenied(true);
+          setTrackingStatus('Camera permission denied');
+          setIsInitializing(false);
+        } else {
+          // Permission prompt needed, show our custom UI
+          setCameraPermissionDenied(true);
+          setTrackingStatus('Camera permission required');
+          setIsInitializing(false);
         }
-        if (cameraRef.current) {
-          cameraRef.current.stop();
-          cameraRef.current = null;
-        }
-        
-        faceMeshRef.current = new FaceMesh({
-          locateFile: (file) => {
-            console.log('Loading MediaPipe file:', file);
-            // Try primary CDN first, fallback to alternative
-            const primaryUrl = `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
-
-            
-            // For WASM files, we'll use the primary CDN
-            if (file.endsWith('.wasm') || file.endsWith('.wasm.bin')) {
-              return primaryUrl;
-            }
-            
-            return primaryUrl;
-          }
-        });
-
-        faceMeshRef.current.setOptions({
-          maxNumFaces: 1,
-          refineLandmarks: true,
-          minDetectionConfidence: 0.5,
-          minTrackingConfidence: 0.5
-        });
-
-        faceMeshRef.current.onResults(onResults);
-
-        // Initialize camera
-        if (!videoRef.current) {
-          throw new Error('Video element not available');
-        }
-        
-        cameraRef.current = new Camera(videoRef.current, {
-          onFrame: async () => {
-            if (videoRef.current && faceMeshRef.current) {
-              try {
-                await faceMeshRef.current.send({ image: videoRef.current });
-              } catch (error) {
-                console.error('Error sending frame to FaceMesh:', error);
-              }
-            }
-          },
-          width: 640,
-          height: 480
-        });
-
-        await cameraRef.current.start();
-        console.log('MediaPipe Face Mesh initialized successfully');
-        setTrackingStatus('Initializing camera...');
-        setIsInitializing(false);
-        
       } catch (error) {
-        console.error('Failed to initialize MediaPipe Face Mesh:', error);
-        setTrackingStatus('Failed to initialize - please refresh the page');
+        console.error('Error checking camera permission:', error);
+        setTrackingStatus('Failed to check camera permission');
         setIsInitializing(false);
-        
-        // Retry after 3 seconds
-        setTimeout(() => {
-          console.log('Retrying MediaPipe initialization...');
-          initializeFaceMesh();
-        }, 3000);
       }
     };
 
-    initializeFaceMesh();
+    initializeWithPermissionCheck();
 
     return () => {
       if (cameraRef.current) {
@@ -978,6 +931,116 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated, on
     setIsCalibrating(false);
   };
 
+  const checkCameraPermission = async (): Promise<'granted' | 'denied' | 'prompt'> => {
+    try {
+      // Check if the browser supports permissions API
+      if ('permissions' in navigator && 'query' in navigator.permissions) {
+        const permission = await navigator.permissions.query({ name: 'camera' as PermissionName });
+        return permission.state as 'granted' | 'denied' | 'prompt';
+      }
+      
+      // Fallback: try to get user media without showing popup
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      stream.getTracks().forEach(track => track.stop());
+      return 'granted';
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes('NotAllowedError') || errorMessage.includes('Permission denied')) {
+        return 'denied';
+      }
+      return 'prompt';
+    }
+  };
+
+  const requestCameraPermission = async () => {
+    try {
+      setTrackingStatus('Requesting camera permission...');
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      stream.getTracks().forEach(track => track.stop());
+      setPermissionState('granted');
+      setCameraPermissionDenied(false);
+      // Now initialize the camera
+      initializeCamera();
+    } catch (error) {
+      console.error('Camera permission denied:', error);
+      setPermissionState('denied');
+      setCameraPermissionDenied(true);
+      setTrackingStatus('Camera permission denied');
+    }
+  };
+
+  const initializeCamera = async () => {
+    try {
+      console.log('Initializing MediaPipe Face Mesh...');
+      
+      // Clean up any existing instances
+      if (faceMeshRef.current) {
+        faceMeshRef.current.close();
+        faceMeshRef.current = null;
+      }
+      if (cameraRef.current) {
+        cameraRef.current.stop();
+        cameraRef.current = null;
+      }
+      
+      faceMeshRef.current = new FaceMesh({
+        locateFile: (file) => {
+          console.log('Loading MediaPipe file:', file);
+          const primaryUrl = `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+          return primaryUrl;
+        }
+      });
+
+      faceMeshRef.current.setOptions({
+        maxNumFaces: 1,
+        refineLandmarks: true,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+
+      faceMeshRef.current.onResults(onResults);
+
+      cameraRef.current = new Camera(videoRef.current!, {
+        onFrame: async () => {
+          if (videoRef.current && faceMeshRef.current) {
+            try {
+              await faceMeshRef.current.send({ image: videoRef.current });
+            } catch (error) {
+              console.error('Error sending frame to FaceMesh:', error);
+            }
+          }
+        },
+        width: 640,
+        height: 480
+      });
+
+      await cameraRef.current.start();
+      console.log('MediaPipe Face Mesh initialized successfully');
+      setTrackingStatus('Camera initialized successfully');
+      setIsInitializing(false);
+      
+    } catch (error) {
+      console.error('Failed to initialize MediaPipe Face Mesh:', error);
+      setTrackingStatus('Failed to initialize - please refresh the page');
+      setIsInitializing(false);
+    }
+  };
+
+  const retryCameraPermission = async () => {
+    try {
+      setCameraPermissionDenied(false);
+      setIsInitializing(true);
+      setTrackingStatus('Requesting camera permission...');
+      
+      // Use the new permission request function
+      await requestCameraPermission();
+    } catch (error) {
+      console.error('Error retrying camera permission:', error);
+      setCameraPermissionDenied(true);
+      setIsInitializing(false);
+    }
+  };
+
   const getCalibratedEyePosition = (rawX: number): number => {
     const { left, center, right } = calibrationData;
     
@@ -1043,6 +1106,59 @@ const EyeTracker: React.FC<EyeTrackerProps> = ({ sessionId, onSessionCreated, on
             <div style={{ fontSize: '12px', marginTop: '10px' }}>
               This may take a few seconds
             </div>
+          </div>
+        )}
+        {cameraPermissionDenied && (
+          <div style={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            backgroundColor: 'rgba(0, 0, 0, 0.9)',
+            color: 'white',
+            padding: '30px',
+            borderRadius: '8px',
+            textAlign: 'center',
+            maxWidth: '400px'
+          }}>
+            <div style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '15px' }}>
+              Camera Permission Required
+            </div>
+            <div style={{ fontSize: '14px', marginBottom: '20px', lineHeight: '1.4' }}>
+              {permissionState === 'denied' ? (
+                'Camera access was denied. Please enable camera permissions in your browser settings and refresh the page.'
+              ) : (
+                'This application needs access to your camera for eye tracking. Click the button below to grant permission.'
+              )}
+            </div>
+            {permissionState !== 'denied' && (
+              <button 
+                onClick={retryCameraPermission}
+                style={{
+                  backgroundColor: '#007bff',
+                  color: 'white',
+                  border: 'none',
+                  padding: '10px 20px',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: 'bold'
+                }}
+                onMouseOver={(e) => {
+                  e.currentTarget.style.backgroundColor = '#0056b3';
+                }}
+                onMouseOut={(e) => {
+                  e.currentTarget.style.backgroundColor = '#007bff';
+                }}
+              >
+                Grant Permission & Retry
+              </button>
+            )}
+            {permissionState === 'denied' && (
+              <div style={{ fontSize: '12px', opacity: 0.8, marginTop: '15px' }}>
+                Tip: Check your browser's address bar for a camera icon to manage permissions
+              </div>
+            )}
           </div>
         )}
         {showLandmarks && (
